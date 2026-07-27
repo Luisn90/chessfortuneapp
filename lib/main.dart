@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 
 import 'chess/chess_engine.dart';
 
@@ -93,6 +95,107 @@ class _LobbyScreenState extends State<LobbyScreen> {
   double saldoSeed = 5.0; // Saldo inicial en la app
   bool cargandoVideo = false;
 
+  late final String _userId;
+  late final String _username;
+  late socket_io.Socket _socket;
+
+  List<Map<String, dynamic>> _salasDisponibles = [];
+  String? _miSalaId; // sala que yo creé y sigue esperando rival
+  bool _conectando = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final sufijo = Random().nextInt(9000) + 1000;
+    _userId = 'guest_$sufijo';
+    _username = 'Jugador$sufijo';
+    _conectarSocket();
+  }
+
+  void _conectarSocket() {
+    _socket = socket_io.io(
+      backendBaseUrl,
+      socket_io.OptionBuilder()
+          .setTransports(['websocket'])
+          .enableForceNew()
+          .build(),
+    );
+
+    _socket.onConnect((_) {
+      if (mounted) setState(() => _conectando = false);
+    });
+
+    _socket.on('salas_actualizadas', (data) {
+      if (!mounted) return;
+      setState(() {
+        _salasDisponibles = List<Map<String, dynamic>>.from(
+          (data as List).map((sala) => Map<String, dynamic>.from(sala)),
+        );
+      });
+    });
+
+    _socket.on('sala_creada', (data) {
+      if (!mounted) return;
+      setState(() => _miSalaId = data['salaId'] as String);
+    });
+
+    _socket.on('partida_iniciada', (data) {
+      if (!mounted) return;
+      final jugadores = List<Map<String, dynamic>>.from(
+        (data['jugadores'] as List).map((j) => Map<String, dynamic>.from(j)),
+      );
+      final estoyEnLaPartida = jugadores.any((j) => j['userId'] == _userId);
+      if (estoyEnLaPartida) {
+        setState(() => _miSalaId = null);
+        Navigator.pushNamed(context, '/game');
+      }
+    });
+
+    _socket.on('error_sala', (data) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(data['message'] ?? 'Error en el lobby')),
+      );
+    });
+
+    _socket.connect();
+  }
+
+  @override
+  void dispose() {
+    _socket.dispose();
+    super.dispose();
+  }
+
+  Future<void> _crearPartida() async {
+    final resultado = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => _CrearSalaDialog(nombreSugerido: 'Sala de $_username'),
+    );
+    if (resultado == null) return;
+
+    _socket.emit('crear_sala', {
+      'userId': _userId,
+      'username': _username,
+      'nombre': resultado['nombre'],
+      'costo': resultado['costo'],
+    });
+  }
+
+  void _unirseAPartida(String salaId) {
+    _socket.emit('unirse_sala', {
+      'salaId': salaId,
+      'userId': _userId,
+      'username': _username,
+    });
+  }
+
+  void _cancelarMiSala() {
+    if (_miSalaId == null) return;
+    _socket.emit('cancelar_sala', {'salaId': _miSalaId, 'userId': _userId});
+    setState(() => _miSalaId = null);
+  }
+
   // Función que llama al servidor Node.js de tu PC
   Future<void> simularVideoAd() async {
     setState(() {
@@ -151,32 +254,51 @@ class _LobbyScreenState extends State<LobbyScreen> {
           )
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _crearPartida,
+        icon: const Icon(Icons.add),
+        label: const Text('Crear partida'),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Salas Disponibles',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                const Text(
+                  'Salas Disponibles',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(width: 8),
+                if (_conectando)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
             ),
             const SizedBox(height: 16),
-            _buildRoomCard(
-              context: context,
-              title: 'Sala de Práctica',
-              subtitle: 'Ideal para calentar y mejorar tu nivel',
-              cost: 'Gratis',
-              color: Colors.green,
+            Expanded(
+              child: _salasDisponibles.isEmpty
+                  ? Center(
+                      child: Text(
+                        _conectando
+                            ? 'Conectando al lobby...'
+                            : 'No hay salas abiertas. ¡Crea una!',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : ListView.separated(
+                      itemCount: _salasDisponibles.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        final sala = _salasDisponibles[index];
+                        return _buildRoomCard(sala);
+                      },
+                    ),
             ),
-            const SizedBox(height: 12),
-            _buildRoomCard(
-              context: context,
-              title: 'Sala Competitiva Alpha',
-              subtitle: 'El ganador se lleva el pozo de SEED',
-              cost: '1.0 SEED',
-              color: Colors.amber,
-            ),
-            const Spacer(),
             Card(
               color: const Color(0xFF2C2C2C),
               child: ListTile(
@@ -185,7 +307,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 subtitle: const Text('Mira 2 videos cortos para recargar 1.0 SEED'),
                 trailing: ElevatedButton(
                   onPressed: cargandoVideo ? null : simularVideoAd,
-                  child: cargandoVideo 
+                  child: cargandoVideo
                       ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('Ver'),
                 ),
@@ -197,23 +319,111 @@ class _LobbyScreenState extends State<LobbyScreen> {
     );
   }
 
-  Widget _buildRoomCard({
-    required BuildContext context,
-    required String title,
-    required String subtitle,
-    required String cost,
-    required Color color,
-  }) {
+  Widget _buildRoomCard(Map<String, dynamic> sala) {
+    final esMiSala = sala['id'] == _miSalaId;
+    final costo = (sala['costo'] as num?) ?? 0;
+    final costoTexto = costo > 0 ? '$costo SEED' : 'Gratis';
+    final costoColor = costo > 0 ? Colors.amber : Colors.green;
+
     return Card(
       color: const Color(0xFF2C2C2C),
       child: ListTile(
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(subtitle),
-        trailing: Text(cost, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
-        onTap: () {
-          Navigator.pushNamed(context, '/game');
-        },
+        title: Text(sala['nombre'] ?? 'Sala', style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text('Creada por ${sala['creadorNombre'] ?? 'Jugador'}'),
+        trailing: esMiSala
+            ? TextButton.icon(
+                onPressed: _cancelarMiSala,
+                icon: const Icon(Icons.close, color: Colors.redAccent, size: 18),
+                label: const Text('Cancelar', style: TextStyle(color: Colors.redAccent)),
+              )
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(costoTexto, style: TextStyle(color: costoColor, fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () => _unirseAPartida(sala['id'] as String),
+                    child: const Text('Unirse'),
+                  ),
+                ],
+              ),
       ),
+    );
+  }
+}
+
+class _CrearSalaDialog extends StatefulWidget {
+  final String nombreSugerido;
+
+  const _CrearSalaDialog({required this.nombreSugerido});
+
+  @override
+  State<_CrearSalaDialog> createState() => _CrearSalaDialogState();
+}
+
+class _CrearSalaDialogState extends State<_CrearSalaDialog> {
+  late final TextEditingController _controller;
+  double _costo = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.nombreSugerido);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF2C2C2C),
+      title: const Text('Crear partida', style: TextStyle(color: Colors.white)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _controller,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(labelText: 'Nombre de la sala'),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Text('Costo:', style: TextStyle(color: Colors.white70)),
+              const SizedBox(width: 12),
+              ChoiceChip(
+                label: const Text('Gratis'),
+                selected: _costo == 0,
+                onSelected: (_) => setState(() => _costo = 0),
+              ),
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: const Text('1.0 SEED'),
+                selected: _costo == 1,
+                onSelected: (_) => setState(() => _costo = 1),
+              ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            final nombre = _controller.text.trim();
+            if (nombre.isEmpty) return;
+            Navigator.of(context).pop({'nombre': nombre, 'costo': _costo});
+          },
+          child: const Text('Crear'),
+        ),
+      ],
     );
   }
 }

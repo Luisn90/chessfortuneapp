@@ -9,6 +9,7 @@ if (typeof globalThis.WebSocket === 'undefined') {
 
 const express = require('express');
 const http = require('http');
+const { randomUUID } = require('crypto');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -87,20 +88,106 @@ app.post('/api/reward-ad', async (req, res) => {
     }
 });
 
-// === SOCKET.IO: Gestión de partidas de Ajedrez en Tiempo Real ===
+// === SOCKET.IO: Lobby de salas en tiempo real ===
+// Estado en memoria (se reinicia si el servidor se reinicia/duerme).
+// sala: { id, nombre, costo, creadorId, estado: 'esperando'|'en_curso', jugadores: [{ userId, username, socketId }] }
+const salas = new Map();
+
+function listaSalasPublicas() {
+    return Array.from(salas.values())
+        .filter((sala) => sala.estado === 'esperando')
+        .map((sala) => ({
+            id: sala.id,
+            nombre: sala.nombre,
+            costo: sala.costo,
+            creadorId: sala.creadorId,
+            creadorNombre: sala.jugadores[0]?.username ?? 'Jugador',
+        }));
+}
+
+function difundirSalas() {
+    io.emit('salas_actualizadas', listaSalasPublicas());
+}
+
 io.on('connection', (socket) => {
     console.log(`Usuario conectado al servidor: ${socket.id}`);
 
-    // Cuando un jugador busca partida
-    socket.on('buscar_partida', (datos) => {
-        console.log(`Usuario ${datos.userId} buscando rival en sala: ${datos.sala}`);
-        // Aquí la IA programará el emparejamiento automático (Matchmaking)
-        socket.join(datos.sala);
-        socket.emit('estado_busqueda', { status: "Buscando oponente..." });
+    // Le mandamos el estado actual del lobby solo a quien se acaba de conectar.
+    socket.emit('salas_actualizadas', listaSalasPublicas());
+
+    socket.on('crear_sala', (datos) => {
+        const { userId, username, nombre, costo } = datos || {};
+        if (!userId || !nombre) {
+            socket.emit('error_sala', { message: 'Faltan datos para crear la sala' });
+            return;
+        }
+
+        const sala = {
+            id: randomUUID(),
+            nombre: String(nombre).slice(0, 40),
+            costo: Number(costo) || 0,
+            creadorId: userId,
+            estado: 'esperando',
+            jugadores: [{ userId, username: username || 'Jugador', socketId: socket.id }],
+        };
+        salas.set(sala.id, sala);
+        socket.join(sala.id);
+
+        console.log(`[Lobby] ${username} creó la sala "${sala.nombre}" (${sala.id})`);
+        socket.emit('sala_creada', { salaId: sala.id });
+        difundirSalas();
+    });
+
+    socket.on('unirse_sala', (datos) => {
+        const { salaId, userId, username } = datos || {};
+        const sala = salas.get(salaId);
+
+        if (!sala || sala.estado !== 'esperando') {
+            socket.emit('error_sala', { message: 'Esa sala ya no está disponible' });
+            return;
+        }
+        if (sala.jugadores.some((j) => j.userId === userId)) {
+            socket.emit('error_sala', { message: 'Ya estás en esa sala' });
+            return;
+        }
+
+        sala.jugadores.push({ userId, username: username || 'Jugador', socketId: socket.id });
+        socket.join(sala.id);
+
+        if (sala.jugadores.length >= 2) {
+            sala.estado = 'en_curso';
+            io.to(sala.id).emit('partida_iniciada', {
+                salaId: sala.id,
+                jugadores: sala.jugadores.map((j) => ({ userId: j.userId, username: j.username })),
+            });
+            console.log(`[Lobby] Sala "${sala.nombre}" completa, partida iniciada`);
+        }
+
+        difundirSalas();
+    });
+
+    socket.on('cancelar_sala', (datos) => {
+        const { salaId, userId } = datos || {};
+        const sala = salas.get(salaId);
+        if (sala && sala.creadorId === userId && sala.estado === 'esperando') {
+            salas.delete(salaId);
+            console.log(`[Lobby] Sala "${sala.nombre}" cancelada por su creador`);
+            difundirSalas();
+        }
     });
 
     socket.on('disconnect', () => {
         console.log(`Usuario desconectado: ${socket.id}`);
+        let huboCambios = false;
+        for (const [salaId, sala] of salas.entries()) {
+            if (sala.estado !== 'esperando') continue;
+            const seguiaAqui = sala.jugadores.some((j) => j.socketId === socket.id);
+            if (seguiaAqui) {
+                salas.delete(salaId);
+                huboCambios = true;
+            }
+        }
+        if (huboCambios) difundirSalas();
     });
 });
 
