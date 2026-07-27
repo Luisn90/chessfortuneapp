@@ -501,6 +501,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
             salaId: data['salaId'] as String,
             miColor: miColor,
             userId: _userId,
+            miNombre: _username,
             costo: costo,
             oponenteNombre: oponente,
           ),
@@ -995,6 +996,7 @@ class GameScreen extends StatefulWidget {
   final String salaId;
   final PieceColor miColor;
   final String userId;
+  final String miNombre;
   final double costo;
   final String? oponenteNombre;
 
@@ -1004,6 +1006,7 @@ class GameScreen extends StatefulWidget {
     required this.salaId,
     required this.miColor,
     required this.userId,
+    required this.miNombre,
     this.costo = 0,
     this.oponenteNombre,
   });
@@ -1017,6 +1020,10 @@ class _GameScreenState extends State<GameScreen> {
   int? selectedIndex;
   List<ChessMove> _legalMovesFromSelection = [];
   String? _avisoRival;
+  // El motor local no sabe de rendiciones (no son un estado del tablero), así
+  // que necesitamos esta bandera aparte para bloquear más jugadas cuando el
+  // servidor anuncia el fin de la partida por cualquier motivo.
+  bool _partidaTerminada = false;
 
   @override
   void initState() {
@@ -1068,7 +1075,8 @@ class _GameScreenState extends State<GameScreen> {
   void _onSquareTap(int index) {
     // Partida terminada, o no es mi turno: no se permiten jugadas.
     final currentStatus = _engine.status;
-    if (currentStatus == GameStatus.checkmate ||
+    if (_partidaTerminada ||
+        currentStatus == GameStatus.checkmate ||
         currentStatus == GameStatus.stalemate ||
         _engine.turn != widget.miColor) {
       return;
@@ -1157,15 +1165,46 @@ class _GameScreenState extends State<GameScreen> {
     });
   }
 
+  Future<void> _confirmarRendicion() async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2C),
+        title: const Text('¿Rendirte?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          widget.costo > 0
+              ? 'Perderás la partida y tu apuesta de ${widget.costo.toStringAsFixed(2)} SEED.'
+              : 'Perderás la partida.',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Rendirse'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar == true) {
+      widget.socket.emit('rendirse', {'salaId': widget.salaId});
+    }
+  }
+
   void _onPartidaTerminada(dynamic data) {
     if (!mounted) return;
     final datos = Map<String, dynamic>.from(data as Map);
-    final resultado = datos['resultado'] as String; // 'jaque_mate' | 'ahogado'
+    final resultado = datos['resultado'] as String; // 'jaque_mate' | 'ahogado' | 'rendicion'
     final ganadorUserId = datos['ganadorUserId'] as String?;
     final saldos = datos['saldos'] == null
         ? null
         : Map<String, dynamic>.from(datos['saldos'] as Map);
     final miNuevoSaldo = saldos?[widget.userId] as num?;
+
+    setState(() => _partidaTerminada = true);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showGameOverDialog(
@@ -1223,9 +1262,17 @@ class _GameScreenState extends State<GameScreen> {
     required bool empate,
     double? miNuevoSaldo,
   }) {
-    final resultadoTexto = resultado == 'jaque_mate'
-        ? (gane ? 'Jaque mate. ¡Ganaste!' : 'Jaque mate. Perdiste.')
-        : 'Tablas por ahogado.';
+    final String resultadoTexto;
+    switch (resultado) {
+      case 'jaque_mate':
+        resultadoTexto = gane ? 'Jaque mate. ¡Ganaste!' : 'Jaque mate. Perdiste.';
+        break;
+      case 'rendicion':
+        resultadoTexto = gane ? 'Tu rival se rindió. ¡Ganaste!' : 'Te rendiste.';
+        break;
+      default:
+        resultadoTexto = 'Tablas por ahogado.';
+    }
 
     String? mensajeFinanciero;
     if (widget.costo > 0) {
@@ -1294,22 +1341,28 @@ class _GameScreenState extends State<GameScreen> {
         ? _findKingIndex(_engine.turn)
         : null;
 
-    final miColorLabel = widget.miColor == PieceColor.white ? 'Blancas' : 'Negras';
+    final terminada =
+        _partidaTerminada || status == GameStatus.checkmate || status == GameStatus.stalemate;
+    final esMiTurno = _engine.turn == widget.miColor;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          widget.oponenteNombre != null
-              ? 'vs ${widget.oponenteNombre} · Tú: $miColorLabel'
-              : 'Partida en Curso',
-        ),
-        backgroundColor: const Color(0xFF2C2C2C),
-      ),
-      body: Center(
-        child: SingleChildScrollView(
+      bottomNavigationBar: _buildBottomNav(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                  Expanded(child: SvgPicture.asset('assets/images/logo.svg', width: 160)),
+                  const SizedBox(width: 48), // balancea el ancho del ícono de volver
+                ],
+              ),
+              const SizedBox(height: 12),
               if (_avisoRival != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8.0),
@@ -1318,17 +1371,10 @@ class _GameScreenState extends State<GameScreen> {
                     style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
                   ),
                 ),
-              Text(
-                _statusLabel(status),
-                style: const TextStyle(fontSize: 18, color: Colors.amber, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 20),
-              Container(
-                width: 400,
-                height: 400,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.amber, width: 2),
-                ),
+              _buildPlayerBar(nombre: widget.oponenteNombre ?? 'Rival'),
+              const SizedBox(height: 10),
+              AspectRatio(
+                aspectRatio: 1,
                 child: GridView.builder(
                   itemCount: 64,
                   physics: const NeverScrollableScrollPhysics(),
@@ -1353,12 +1399,12 @@ class _GameScreenState extends State<GameScreen> {
                     final piece = _engine.pieceAt(boardIndex);
 
                     Color squareColor = isDarkSquare
-                        ? const Color(0xFF769656)
-                        : const Color(0xFFEEFEED);
+                        ? const Color(0xFF16162F)
+                        : const Color(0xFF0B0B1F);
                     if (isKingInCheck) {
-                      squareColor = Colors.red.withOpacity(0.7);
+                      squareColor = Colors.redAccent.withOpacity(0.55);
                     } else if (isSelected) {
-                      squareColor = Colors.blue.withOpacity(0.6);
+                      squareColor = goldAccent.withOpacity(0.4);
                     }
 
                     return GestureDetector(
@@ -1390,9 +1436,9 @@ class _GameScreenState extends State<GameScreen> {
                                 height: piece == null ? 14 : 36,
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
-                                  color: piece == null ? Colors.black26 : Colors.transparent,
+                                  color: piece == null ? Colors.white24 : Colors.transparent,
                                   border: piece != null
-                                      ? Border.all(color: Colors.black45, width: 3)
+                                      ? Border.all(color: Colors.white54, width: 3)
                                       : null,
                                 ),
                               ),
@@ -1403,19 +1449,101 @@ class _GameScreenState extends State<GameScreen> {
                   },
                 ),
               ),
-              const SizedBox(height: 20),
-              _buildCapturedRow('Capturadas por blancas', _engine.capturedByWhite),
-              _buildCapturedRow('Capturadas por negras', _engine.capturedByBlack),
               const SizedBox(height: 10),
-              TextButton.icon(
-                icon: const Icon(Icons.exit_to_app),
-                label: const Text('Salir de la partida'),
-                onPressed: () => Navigator.of(context).pop(),
+              _buildPlayerBar(
+                nombre: widget.miNombre,
+                estado: _statusLabel(status),
+                estadoDestacado: esMiTurno || status == GameStatus.check,
               ),
+              const SizedBox(height: 12),
+              _buildCapturedRow(
+                'Capturaste',
+                widget.miColor == PieceColor.white ? _engine.capturedByWhite : _engine.capturedByBlack,
+              ),
+              _buildCapturedRow(
+                'Te capturaron',
+                widget.miColor == PieceColor.white ? _engine.capturedByBlack : _engine.capturedByWhite,
+              ),
+              const Spacer(),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: terminada ? null : _confirmarRendicion,
+                      child: const Text('Surrender'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => ScaffoldMessenger.of(context)
+                          .showSnackBar(const SnackBar(content: Text('Próximamente'))),
+                      child: const Text('Table'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => ScaffoldMessenger.of(context)
+                          .showSnackBar(const SnackBar(content: Text('Próximamente'))),
+                      child: const Text('Report'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildPlayerBar({required String nombre, String? estado, bool estadoDestacado = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(color: const Color(0xFF12122A), borderRadius: BorderRadius.circular(14)),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            radius: 16,
+            backgroundColor: Colors.white12,
+            child: Icon(Icons.person, color: Colors.white54, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(nombre, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+          if (estado != null)
+            Text(
+              estado,
+              style: TextStyle(
+                color: estadoDestacado ? goldAccent : Colors.white54,
+                fontWeight: estadoDestacado ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return BottomNavigationBar(
+      currentIndex: 0,
+      backgroundColor: const Color(0xFF0A0A20),
+      selectedItemColor: goldAccent,
+      unselectedItemColor: Colors.white54,
+      type: BottomNavigationBarType.fixed,
+      onTap: (indice) => ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Próximamente')),
+      ),
+      items: const [
+        BottomNavigationBarItem(
+          icon: Badge(label: Text('1'), child: Icon(Icons.chat_bubble_outline)),
+          label: 'Chat',
+        ),
+        BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), label: 'Settings'),
+      ],
     );
   }
 

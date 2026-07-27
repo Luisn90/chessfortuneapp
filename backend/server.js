@@ -139,10 +139,12 @@ function difundirSalas() {
 }
 
 // Liquida una partida terminada: si tenía apuesta, le paga al ganador el
-// pozo menos la comisión de la casa (jaque mate) o devuelve la apuesta a
-// cada quien sin comisión (ahogado/tablas). Sin apuesta, solo se avisa el
-// resultado. jugadores[0] siempre es blancas, jugadores[1] siempre negras.
-async function finalizarPartida(sala, partida, estado) {
+// pozo menos la comisión de la casa (jaque mate o rendición) o devuelve la
+// apuesta a cada quien sin comisión (ahogado/tablas). Sin apuesta, solo se
+// avisa el resultado. jugadores[0] siempre es blancas, jugadores[1] negras.
+// ganadorForzadoId se usa para la rendición, donde el ganador no se deduce
+// del tablero sino de quién se rindió.
+async function finalizarPartida(sala, partida, estado, ganadorForzadoId = null) {
     const [blancas, negras] = sala.jugadores;
     let ganadorUserId = null;
     let saldos = null;
@@ -151,11 +153,15 @@ async function finalizarPartida(sala, partida, estado) {
         // partida.turn quedó en el color que no pudo mover: ese perdió.
         const ganador = partida.turn === PieceColor.WHITE ? negras : blancas;
         ganadorUserId = ganador.userId;
+    } else if (estado === 'rendicion') {
+        ganadorUserId = ganadorForzadoId;
     }
+
+    const hayGanadorClaro = estado === 'checkmate' || estado === 'rendicion';
 
     if (sala.costo > 0) {
         try {
-            if (estado === 'checkmate') {
+            if (hayGanadorClaro && ganadorUserId) {
                 const pozo = sala.costo * 2;
                 const pago = Math.round(pozo * (1 - RAKE_PORCENTAJE) * 100) / 100;
                 const nuevoSaldo = await ajustarSaldo(ganadorUserId, pago);
@@ -173,8 +179,9 @@ async function finalizarPartida(sala, partida, estado) {
     sala.estado = 'finalizada';
     partidas.delete(sala.id);
 
+    const resultado = estado === 'checkmate' ? 'jaque_mate' : estado === 'rendicion' ? 'rendicion' : 'ahogado';
     io.to(sala.id).emit('partida_terminada', {
-        resultado: estado === 'checkmate' ? 'jaque_mate' : 'ahogado',
+        resultado,
         ganadorUserId,
         costo: sala.costo,
         saldos,
@@ -326,6 +333,20 @@ io.on('connection', (socket) => {
         if (estadoPartida === 'checkmate' || estadoPartida === 'stalemate') {
             await finalizarPartida(sala, partida, estadoPartida);
         }
+    });
+
+    // Un jugador se rinde: el rival gana la partida (y el pozo, si había apuesta).
+    socket.on('rendirse', async (datos) => {
+        const { salaId } = datos || {};
+        const sala = salas.get(salaId);
+        const partida = partidas.get(salaId);
+        if (!sala || !partida || sala.estado !== 'en_curso') return;
+
+        const jugador = sala.jugadores.find((j) => j.socketId === socket.id);
+        if (!jugador) return;
+
+        const ganador = sala.jugadores.find((j) => j.userId !== jugador.userId);
+        await finalizarPartida(sala, partida, 'rendicion', ganador ? ganador.userId : null);
     });
 
     socket.on('disconnect', () => {
