@@ -14,10 +14,17 @@ void main() {
     );
   });
 
-  testWidgets('App arranca en la pantalla de login', (WidgetTester tester) async {
+  testWidgets('App arranca en el splash y pasa a la pantalla de login', (WidgetTester tester) async {
     await tester.pumpWidget(const ChessSeedApp());
 
-    expect(find.byType(SvgPicture), findsOneWidget);
+    // Splash: ícono + logo animados, ninguna sesión activa todavía.
+    expect(find.byType(SvgPicture), findsWidgets);
+    expect(find.text('Iniciar sesión'), findsNothing);
+
+    // Tras el delay del splash, navega sola al login.
+    await tester.pump(const Duration(milliseconds: 2100));
+    await tester.pumpAndSettle();
+
     expect(find.text('Iniciar sesión'), findsOneWidget);
   });
 }

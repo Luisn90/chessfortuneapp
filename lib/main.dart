@@ -69,7 +69,7 @@ class ChessSeedApp extends StatelessWidget {
         // el socket, la sala y el color asignado, así que se navega con
         // Navigator.push(MaterialPageRoute(...)) desde el lobby.
       },
-      home: supabase.auth.currentSession != null ? const LobbyScreen() : const LoginScreen(),
+      home: const SplashScreen(),
       // Flutter Web (CanvasKit) resuelve cada glifo Unicode nuevo de forma
       // perezosa la primera vez que se pinta, y hasta que termina muestra
       // el glifo equivocado (se corrige recién en el próximo repintado).
@@ -84,6 +84,94 @@ class ChessSeedApp extends StatelessWidget {
             child: Text('♔♕♖♗♘♙♚♛♜♝♞♟', style: TextStyle(fontSize: 1)),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// === 0. SPLASH ANIMADO DE INTRO ===
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _iconFade;
+  late final Animation<double> _iconScale;
+  late final Animation<double> _wordmarkFade;
+  late final Animation<Offset> _wordmarkOffset;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+
+    _iconFade = CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
+    );
+    _iconScale = Tween<double>(begin: 0.72, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: const Interval(0.0, 0.6, curve: Curves.easeOutCubic)),
+    );
+    _wordmarkFade = CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.45, 1.0, curve: Curves.easeOut),
+    );
+    _wordmarkOffset = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero).animate(
+      CurvedAnimation(parent: _controller, curve: const Interval(0.45, 1.0, curve: Curves.easeOutCubic)),
+    );
+
+    _controller.forward();
+    _irALaSiguientePantalla();
+  }
+
+  Future<void> _irALaSiguientePantalla() async {
+    await Future.delayed(const Duration(milliseconds: 2000));
+    if (!mounted) return;
+    final siguiente = supabase.auth.currentSession != null ? const LobbyScreen() : const LoginScreen();
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => siguiente));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: appBackgroundColor,
+      body: Center(
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            return Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Opacity(
+                  opacity: _iconFade.value,
+                  child: Transform.scale(
+                    scale: _iconScale.value,
+                    child: SvgPicture.asset('assets/images/icon.svg', width: 128),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Opacity(
+                  opacity: _wordmarkFade.value,
+                  child: FractionalTranslation(
+                    translation: _wordmarkOffset.value,
+                    child: SvgPicture.asset('assets/images/logo.svg', width: 220),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
