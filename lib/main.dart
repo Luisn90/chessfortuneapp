@@ -96,7 +96,8 @@ class _LoginScreenState extends State<LoginScreen> {
         );
         if (!mounted) return;
         if (respuesta.session == null) {
-          _mostrarError('Cuenta creada. Revisa tu correo para confirmarla antes de entrar.');
+          await _mostrarConfirmacionPendiente(email);
+          if (!mounted) return;
           setState(() => _modoRegistro = false);
           return;
         }
@@ -107,7 +108,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
       Navigator.pushReplacementNamed(context, '/lobby');
     } on AuthException catch (e) {
-      _mostrarError(e.message);
+      _mostrarError(_traducirErrorAuth(e));
     } catch (e) {
       _mostrarError('No se pudo conectar con el servidor de autenticación');
     } finally {
@@ -115,8 +116,48 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  String _traducirErrorAuth(AuthException e) {
+    switch (e.code) {
+      case 'email_not_confirmed':
+        return 'Todavía no confirmaste tu correo. Revisa tu bandeja de entrada.';
+      case 'invalid_credentials':
+        return 'Correo o contraseña incorrectos.';
+      case 'email_address_invalid':
+        return 'Ese correo no es válido.';
+      case 'user_already_exists':
+      case 'email_exists':
+        return 'Ya existe una cuenta con ese correo.';
+      case 'weak_password':
+        return 'La contraseña es muy débil (mínimo 6 caracteres).';
+      default:
+        return e.message;
+    }
+  }
+
   void _mostrarError(String mensaje) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensaje)));
+  }
+
+  Future<void> _mostrarConfirmacionPendiente(String email) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2C),
+        title: const Text('Confirma tu correo', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Te enviamos un enlace de confirmación a $email. Ábrelo desde ese '
+          'correo y después vuelve aquí a iniciar sesión.',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
