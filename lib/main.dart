@@ -5,6 +5,11 @@ import 'package:http/http.dart' as http;
 
 import 'chess/chess_engine.dart';
 
+/// URL del backend (Express + Socket.IO) desplegado en Render.
+/// El plan gratuito "duerme" tras ~15 min sin tráfico: la primera
+/// petición después de eso puede tardar 30-50s en responder.
+const String backendBaseUrl = 'https://chessfortuneapp.onrender.com';
+
 void main() {
   runApp(const ChessSeedApp());
 }
@@ -95,8 +100,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
     });
 
     try {
-      // Hacemos la petición POST al servidor local
-      final url = Uri.parse('http://localhost:3000/api/reward-ad');
+      // Hacemos la petición POST al backend desplegado en Render
+      final url = Uri.parse('$backendBaseUrl/api/reward-ad');
       final respuesta = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
