@@ -1,5 +1,12 @@
 require('dotenv').config();
 
+// Node 18 no trae WebSocket nativo, y el cliente de Supabase lo requiere
+// para su módulo de Realtime (aunque no lo usemos aquí). Node 22+ no
+// necesitaría esto; mientras tanto usamos el paquete `ws` como polyfill.
+if (typeof globalThis.WebSocket === 'undefined') {
+    globalThis.WebSocket = require('ws');
+}
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
