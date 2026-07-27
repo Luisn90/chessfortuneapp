@@ -176,10 +176,25 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Reenvía la jugada al rival (el otro socket unido a la misma sala).
+    // La legalidad ya se validó en el cliente que la envió.
+    socket.on('mover_pieza', (datos) => {
+        const { salaId, from, to, promotion } = datos || {};
+        if (!salaId || from === undefined || to === undefined) return;
+        socket.to(salaId).emit('pieza_movida', { from, to, promotion });
+    });
+
     socket.on('disconnect', () => {
         console.log(`Usuario desconectado: ${socket.id}`);
         let huboCambios = false;
         for (const [salaId, sala] of salas.entries()) {
+            if (sala.estado === 'en_curso') {
+                const seguiaAqui = sala.jugadores.some((j) => j.socketId === socket.id);
+                if (seguiaAqui) {
+                    socket.to(salaId).emit('rival_desconectado');
+                }
+                continue;
+            }
             if (sala.estado !== 'esperando') continue;
             const seguiaAqui = sala.jugadores.some((j) => j.socketId === socket.id);
             if (seguiaAqui) {

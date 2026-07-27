@@ -32,7 +32,9 @@ class ChessSeedApp extends StatelessWidget {
       routes: {
         '/': (context) => const LoginScreen(),
         '/lobby': (context) => const LobbyScreen(),
-        '/game': (context) => const GameScreen(),
+        // '/game' ya no es una ruta con nombre: GameScreen ahora requiere
+        // el socket, la sala y el color asignado, así que se navega con
+        // Navigator.push(MaterialPageRoute(...)) desde el lobby.
       },
     );
   }
@@ -144,11 +146,24 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final jugadores = List<Map<String, dynamic>>.from(
         (data['jugadores'] as List).map((j) => Map<String, dynamic>.from(j)),
       );
-      final estoyEnLaPartida = jugadores.any((j) => j['userId'] == _userId);
-      if (estoyEnLaPartida) {
-        setState(() => _miSalaId = null);
-        Navigator.pushNamed(context, '/game');
-      }
+      final miIndice = jugadores.indexWhere((j) => j['userId'] == _userId);
+      if (miIndice == -1) return; // partida de otra sala, no es la mía
+
+      final miColor = miIndice == 0 ? PieceColor.white : PieceColor.black;
+      final oponente = jugadores[miIndice == 0 ? 1 : 0]['username'] as String?;
+
+      setState(() => _miSalaId = null);
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => GameScreen(
+            socket: _socket,
+            salaId: data['salaId'] as String,
+            miColor: miColor,
+            oponenteNombre: oponente,
+          ),
+        ),
+      );
     });
 
     _socket.on('error_sala', (data) {
@@ -431,7 +446,18 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
 
 // === 3. PANTALLA DEL JUEGO (TABLERO CON REGLAS DE AJEDREZ REALES) ===
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+  final socket_io.Socket socket;
+  final String salaId;
+  final PieceColor miColor;
+  final String? oponenteNombre;
+
+  const GameScreen({
+    super.key,
+    required this.socket,
+    required this.salaId,
+    required this.miColor,
+    this.oponenteNombre,
+  });
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -441,27 +467,55 @@ class _GameScreenState extends State<GameScreen> {
   final ChessEngine _engine = ChessEngine();
   int? selectedIndex;
   List<ChessMove> _legalMovesFromSelection = [];
+  String? _avisoRival;
 
-  void _resetGame() {
-    setState(() {
-      _engine.reset();
-      selectedIndex = null;
-      _legalMovesFromSelection = [];
-    });
+  @override
+  void initState() {
+    super.initState();
+    widget.socket.on('pieza_movida', _onMovimientoRemoto);
+    widget.socket.on('rival_desconectado', _onRivalDesconectado);
+  }
+
+  @override
+  void dispose() {
+    widget.socket.off('pieza_movida', _onMovimientoRemoto);
+    widget.socket.off('rival_desconectado', _onRivalDesconectado);
+    super.dispose();
+  }
+
+  void _onMovimientoRemoto(dynamic data) {
+    if (!mounted) return;
+    final datos = Map<String, dynamic>.from(data as Map);
+    final from = datos['from'] as int;
+    final to = datos['to'] as int;
+    final promoNombre = datos['promotion'] as String?;
+    final promotion = promoNombre == null
+        ? null
+        : PieceType.values.firstWhere((t) => t.name == promoNombre);
+    _aplicarMovimiento(ChessMove(from, to, promotion: promotion));
+  }
+
+  void _onRivalDesconectado(dynamic _) {
+    if (!mounted) return;
+    setState(() => _avisoRival = 'Tu rival se desconectó de la partida');
   }
 
   void _onSquareTap(int index) {
-    // Partida terminada: no se permiten más jugadas hasta reiniciar.
+    // Partida terminada, o no es mi turno: no se permiten jugadas.
     final currentStatus = _engine.status;
     if (currentStatus == GameStatus.checkmate ||
-        currentStatus == GameStatus.stalemate) {
+        currentStatus == GameStatus.stalemate ||
+        _engine.turn != widget.miColor) {
       return;
     }
 
     final tappedPiece = _engine.pieceAt(index);
+    final esPiezaPropia = tappedPiece != null &&
+        tappedPiece.color == _engine.turn &&
+        tappedPiece.color == widget.miColor;
 
     if (selectedIndex == null) {
-      if (tappedPiece != null && tappedPiece.color == _engine.turn) {
+      if (esPiezaPropia) {
         setState(() {
           selectedIndex = index;
           _legalMovesFromSelection = _engine.legalMovesFrom(index);
@@ -483,7 +537,7 @@ class _GameScreenState extends State<GameScreen> {
 
     if (movesToTarget.isEmpty) {
       // No es un destino legal: si es otra pieza propia, cambiamos selección.
-      if (tappedPiece != null && tappedPiece.color == _engine.turn) {
+      if (esPiezaPropia) {
         setState(() {
           selectedIndex = index;
           _legalMovesFromSelection = _engine.legalMovesFrom(index);
@@ -510,7 +564,19 @@ class _GameScreenState extends State<GameScreen> {
     _playMove(movesToTarget.first);
   }
 
+  /// Jugada hecha por mí: la aplico localmente y se la mando al rival.
   void _playMove(ChessMove move) {
+    widget.socket.emit('mover_pieza', {
+      'salaId': widget.salaId,
+      'from': move.from,
+      'to': move.to,
+      'promotion': move.promotion?.name,
+    });
+    _aplicarMovimiento(move);
+  }
+
+  /// Aplica una jugada al tablero (propia o recibida del rival).
+  void _aplicarMovimiento(ChessMove move) {
     setState(() {
       _engine.makeMove(move);
       selectedIndex = null;
@@ -578,14 +644,10 @@ class _GameScreenState extends State<GameScreen> {
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.of(context).pop();
-              _resetGame();
+              Navigator.of(context).pop(); // cierra el diálogo
+              Navigator.of(context).pop(); // vuelve al lobby
             },
-            child: const Text('Nueva partida'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cerrar'),
+            child: const Text('Volver al lobby'),
           ),
         ],
       ),
@@ -593,16 +655,17 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   String _statusLabel(GameStatus status) {
-    final turnLabel = _engine.turn == PieceColor.white ? 'Blancas' : 'Negras';
+    final esMiTurno = _engine.turn == widget.miColor;
+    final quien = esMiTurno ? 'Tu turno' : 'Turno de tu rival';
     switch (status) {
       case GameStatus.checkmate:
         return 'Jaque mate';
       case GameStatus.stalemate:
         return 'Tablas por ahogado';
       case GameStatus.check:
-        return 'Jaque a $turnLabel — turno de $turnLabel';
+        return 'Jaque — $quien';
       case GameStatus.playing:
-        return 'Turno de $turnLabel';
+        return quien;
     }
   }
 
@@ -614,9 +677,15 @@ class _GameScreenState extends State<GameScreen> {
         ? _findKingIndex(_engine.turn)
         : null;
 
+    final miColorLabel = widget.miColor == PieceColor.white ? 'Blancas' : 'Negras';
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Partida en Curso'),
+        title: Text(
+          widget.oponenteNombre != null
+              ? 'vs ${widget.oponenteNombre} · Tú: $miColorLabel'
+              : 'Partida en Curso',
+        ),
         backgroundColor: const Color(0xFF2C2C2C),
       ),
       body: Center(
@@ -624,6 +693,14 @@ class _GameScreenState extends State<GameScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              if (_avisoRival != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: Text(
+                    _avisoRival!,
+                    style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
+                  ),
+                ),
               Text(
                 _statusLabel(status),
                 style: const TextStyle(fontSize: 18, color: Colors.amber, fontWeight: FontWeight.bold),
@@ -699,10 +776,10 @@ class _GameScreenState extends State<GameScreen> {
               _buildCapturedRow('Capturadas por blancas', _engine.capturedByWhite),
               _buildCapturedRow('Capturadas por negras', _engine.capturedByBlack),
               const SizedBox(height: 10),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.refresh),
-                label: const Text('Nueva partida'),
-                onPressed: _resetGame,
+              TextButton.icon(
+                icon: const Icon(Icons.exit_to_app),
+                label: const Text('Salir de la partida'),
+                onPressed: () => Navigator.of(context).pop(),
               ),
             ],
           ),
