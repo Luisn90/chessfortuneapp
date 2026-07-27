@@ -3,16 +3,27 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'chess/chess_engine.dart';
-import 'identidad_jugador.dart';
 
 /// URL del backend (Express + Socket.IO) desplegado en Render.
 /// El plan gratuito "duerme" tras ~15 min sin tráfico: la primera
 /// petición después de eso puede tardar 30-50s en responder.
 const String backendBaseUrl = 'https://chessfortuneapp.onrender.com';
 
-void main() {
+/// Proyecto Supabase (misma base de datos que usa el backend). La clave
+/// "publishable" es segura para embeber en la app: solo permite operaciones
+/// de autenticación; los saldos de SEED solo los toca el backend con su
+/// propia clave privada (service_role), que nunca viaja al cliente.
+const String supabaseUrl = 'https://zbswjvubxbnethdemelo.supabase.co';
+const String supabaseAnonKey = 'sb_publishable_rNGKmrRjqRehf2fC9RGBow_yrV_A7CB';
+
+SupabaseClient get supabase => Supabase.instance.client;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
   runApp(const ChessSeedApp());
 }
 
@@ -28,56 +39,161 @@ class ChessSeedApp extends StatelessWidget {
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF1E1E1E),
       ),
-      initialRoute: '/',
       routes: {
-        '/': (context) => const LoginScreen(),
         '/lobby': (context) => const LobbyScreen(),
         // '/game' ya no es una ruta con nombre: GameScreen ahora requiere
         // el socket, la sala y el color asignado, así que se navega con
         // Navigator.push(MaterialPageRoute(...)) desde el lobby.
       },
+      home: supabase.auth.currentSession != null ? const LobbyScreen() : const LoginScreen(),
     );
   }
 }
 
-// === 1. PANTALLA DE INICIO DE SESIÓN ===
-class LoginScreen extends StatelessWidget {
+// === 1. PANTALLA DE INICIO DE SESIÓN / REGISTRO (Supabase Auth) ===
+class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _usernameController = TextEditingController();
+
+  bool _modoRegistro = false;
+  bool _cargando = false;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    _usernameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _enviar() async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    if (email.isEmpty || password.isEmpty) {
+      _mostrarError('Completa correo y contraseña');
+      return;
+    }
+    if (_modoRegistro && _usernameController.text.trim().isEmpty) {
+      _mostrarError('Elige un nombre de usuario');
+      return;
+    }
+
+    setState(() => _cargando = true);
+    try {
+      if (_modoRegistro) {
+        final respuesta = await supabase.auth.signUp(
+          email: email,
+          password: password,
+          data: {'username': _usernameController.text.trim()},
+        );
+        if (!mounted) return;
+        if (respuesta.session == null) {
+          _mostrarError('Cuenta creada. Revisa tu correo para confirmarla antes de entrar.');
+          setState(() => _modoRegistro = false);
+          return;
+        }
+      } else {
+        await supabase.auth.signInWithPassword(email: email, password: password);
+      }
+
+      if (!mounted) return;
+      Navigator.pushReplacementNamed(context, '/lobby');
+    } on AuthException catch (e) {
+      _mostrarError(e.message);
+    } catch (e) {
+      _mostrarError('No se pudo conectar con el servidor de autenticación');
+    } finally {
+      if (mounted) setState(() => _cargando = false);
+    }
+  }
+
+  void _mostrarError(String mensaje) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensaje)));
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.casino, size: 80, color: Colors.amber),
-              const SizedBox(height: 16),
-              const Text(
-                'CHESS SEED',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Juega, gana y acumula tokens',
-                style: TextStyle(fontSize: 16, color: Colors.grey),
-              ),
-              const SizedBox(height: 48),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.login, color: Colors.black),
-                label: const Text('Iniciar Sesión con Google', style: TextStyle(color: Colors.black)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.casino, size: 72, color: Colors.amber),
+                const SizedBox(height: 16),
+                const Text(
+                  'CHESS SEED',
+                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
                 ),
-                onPressed: () {
-                  Navigator.pushReplacementNamed(context, '/lobby');
-                },
-              ),
-            ],
+                const SizedBox(height: 8),
+                const Text(
+                  'Juega, gana y acumula tokens',
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+                const SizedBox(height: 40),
+                if (_modoRegistro) ...[
+                  TextField(
+                    controller: _usernameController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(labelText: 'Nombre de usuario'),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                TextField(
+                  controller: _emailController,
+                  style: const TextStyle(color: Colors.white),
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(labelText: 'Correo'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passwordController,
+                  style: const TextStyle(color: Colors.white),
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Contraseña'),
+                  onSubmitted: (_) => _enviar(),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  ),
+                  onPressed: _cargando ? null : _enviar,
+                  child: _cargando
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(
+                          _modoRegistro ? 'Crear cuenta' : 'Iniciar sesión',
+                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                        ),
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: _cargando ? null : () => setState(() => _modoRegistro = !_modoRegistro),
+                  child: Text(
+                    _modoRegistro
+                        ? '¿Ya tienes cuenta? Inicia sesión'
+                        : '¿No tienes cuenta? Regístrate',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -113,11 +229,27 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 
   Future<void> _inicializar() async {
-    final identidad = await IdentidadJugador.obtener();
+    final usuario = supabase.auth.currentUser;
+    if (usuario == null) {
+      // No debería pasar (solo se llega aquí ya autenticado), pero por las
+      // dudas mandamos de vuelta al login en vez de dejar la pantalla rota.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const LoginScreen()),
+            (route) => false,
+          );
+        }
+      });
+      return;
+    }
+
     if (!mounted) return;
     setState(() {
-      _userId = identidad.userId;
-      _username = identidad.username;
+      _userId = usuario.id;
+      _username = (usuario.userMetadata?['username'] as String?)?.trim().isNotEmpty == true
+          ? usuario.userMetadata!['username'] as String
+          : (usuario.email ?? 'Jugador');
       _identidadLista = true;
     });
     _conectarSocket();
@@ -255,7 +387,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final respuesta = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'userId': _userId}),
+        body: jsonEncode({'userId': _userId, 'username': _username}),
       );
 
       if (!mounted) return;
@@ -294,11 +426,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Lobby Principal'),
+        title: Text('Hola, $_username'),
         backgroundColor: const Color(0xFF2C2C2C),
         actions: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: Chip(
               avatar: const Icon(Icons.monetization_on, color: Colors.amber, size: 20),
               label: Text(
@@ -307,7 +439,19 @@ class _LobbyScreenState extends State<LobbyScreen> {
               ),
               backgroundColor: Colors.black54,
             ),
-          )
+          ),
+          IconButton(
+            tooltip: 'Cerrar sesión',
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await supabase.auth.signOut();
+              if (!context.mounted) return;
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+          ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(

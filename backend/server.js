@@ -41,7 +41,7 @@ const io = new Server(server, {
 // devuelve su apuesta a cada jugador tal cual.
 const RAKE_PORCENTAJE = 0.10;
 
-async function obtenerOCrearUsuario(userId) {
+async function obtenerOCrearUsuario(userId, username) {
     const { data: existente, error: errorLectura } = await supabase
         .from('users')
         .select('*')
@@ -53,7 +53,7 @@ async function obtenerOCrearUsuario(userId) {
 
     const { data: nuevo, error: errorInsercion } = await supabase
         .from('users')
-        .insert({ id: userId, username: 'UsuarioNuevo', seed_gratis: 0, seed_real: 0 })
+        .insert({ id: userId, username: username || 'Jugador', seed_gratis: 0, seed_real: 0 })
         .select()
         .single();
 
@@ -74,13 +74,13 @@ async function ajustarSaldo(userId, delta) {
 
 // === ENDPOINT: Simulación de recompensa por ver un video ===
 app.post('/api/reward-ad', async (req, res) => {
-    const { userId } = req.body;
+    const { userId, username } = req.body;
     if (!userId) {
         return res.status(400).json({ success: false, message: 'Falta userId' });
     }
 
     try {
-        await obtenerOCrearUsuario(userId);
+        await obtenerOCrearUsuario(userId, username);
         const nuevoSaldo = await ajustarSaldo(userId, 0.5);
 
         console.log(`[Anuncio] Usuario ${userId} vio un video. Nuevo saldo: ${nuevoSaldo} SEED`);
@@ -210,7 +210,7 @@ io.on('connection', (socket) => {
         socket.emit('sala_creada', { salaId: sala.id });
         difundirSalas();
 
-        if (sala.costo > 0) obtenerOCrearUsuario(userId).catch(() => {});
+        if (sala.costo > 0) obtenerOCrearUsuario(userId, username).catch(() => {});
     });
 
     socket.on('unirse_sala', async (datos) => {
@@ -228,7 +228,7 @@ io.on('connection', (socket) => {
 
         if (sala.costo > 0) {
             try {
-                await obtenerOCrearUsuario(userId);
+                await obtenerOCrearUsuario(userId, username);
             } catch (error) {
                 socket.emit('error_sala', { message: 'No se pudo verificar tu cuenta' });
                 return;
