@@ -472,18 +472,23 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
-    widget.socket.on('pieza_movida', _onMovimientoRemoto);
+    // El servidor es la autoridad: toda jugada (mía o del rival) solo se
+    // aplica al tablero cuando él la confirma por "pieza_movida". Así el
+    // tablero nunca puede desincronizarse entre los dos jugadores.
+    widget.socket.on('pieza_movida', _onMovimientoConfirmado);
+    widget.socket.on('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.on('rival_desconectado', _onRivalDesconectado);
   }
 
   @override
   void dispose() {
-    widget.socket.off('pieza_movida', _onMovimientoRemoto);
+    widget.socket.off('pieza_movida', _onMovimientoConfirmado);
+    widget.socket.off('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.off('rival_desconectado', _onRivalDesconectado);
     super.dispose();
   }
 
-  void _onMovimientoRemoto(dynamic data) {
+  void _onMovimientoConfirmado(dynamic data) {
     if (!mounted) return;
     final datos = Map<String, dynamic>.from(data as Map);
     final from = datos['from'] as int;
@@ -493,6 +498,14 @@ class _GameScreenState extends State<GameScreen> {
         ? null
         : PieceType.values.firstWhere((t) => t.name == promoNombre);
     _aplicarMovimiento(ChessMove(from, to, promotion: promotion));
+  }
+
+  void _onMovimientoRechazado(dynamic data) {
+    if (!mounted) return;
+    final datos = Map<String, dynamic>.from(data as Map);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(datos['message'] ?? 'Jugada rechazada por el servidor')),
+    );
   }
 
   void _onRivalDesconectado(dynamic _) {
@@ -564,15 +577,20 @@ class _GameScreenState extends State<GameScreen> {
     _playMove(movesToTarget.first);
   }
 
-  /// Jugada hecha por mí: la aplico localmente y se la mando al rival.
+  /// Jugada hecha por mí: se la mando al servidor para que la valide.
+  /// No se aplica al tablero aquí — se aplica cuando llega confirmada por
+  /// "pieza_movida" (ver [_onMovimientoConfirmado]).
   void _playMove(ChessMove move) {
+    setState(() {
+      selectedIndex = null;
+      _legalMovesFromSelection = [];
+    });
     widget.socket.emit('mover_pieza', {
       'salaId': widget.salaId,
       'from': move.from,
       'to': move.to,
       'promotion': move.promotion?.name,
     });
-    _aplicarMovimiento(move);
   }
 
   /// Aplica una jugada al tablero (propia o recibida del rival).

@@ -13,6 +13,7 @@ const { randomUUID } = require('crypto');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const { ChessEngine, PieceColor } = require('./chessEngine');
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -93,6 +94,11 @@ app.post('/api/reward-ad', async (req, res) => {
 // sala: { id, nombre, costo, creadorId, estado: 'esperando'|'en_curso', jugadores: [{ userId, username, socketId }] }
 const salas = new Map();
 
+// Autoridad de cada partida en curso: salaId -> ChessEngine.
+// jugadores[0] siempre juega con blancas, jugadores[1] con negras
+// (mismo criterio que usa el cliente al recibir "partida_iniciada").
+const partidas = new Map();
+
 function listaSalasPublicas() {
     return Array.from(salas.values())
         .filter((sala) => sala.estado === 'esperando')
@@ -156,6 +162,7 @@ io.on('connection', (socket) => {
 
         if (sala.jugadores.length >= 2) {
             sala.estado = 'en_curso';
+            partidas.set(sala.id, new ChessEngine());
             io.to(sala.id).emit('partida_iniciada', {
                 salaId: sala.id,
                 jugadores: sala.jugadores.map((j) => ({ userId: j.userId, username: j.username })),
@@ -176,12 +183,40 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Reenvía la jugada al rival (el otro socket unido a la misma sala).
-    // La legalidad ya se validó en el cliente que la envió.
+    // El servidor es la autoridad de la partida: valida la jugada contra su
+    // propio motor antes de aplicarla. Si es legal, la difunde a AMBOS
+    // jugadores (incluido quien la envió); si no, solo avisa al remitente y
+    // el tablero de nadie cambia (evita que un cliente modificado haga trampa
+    // y evita desincronizar a los dos jugadores).
     socket.on('mover_pieza', (datos) => {
         const { salaId, from, to, promotion } = datos || {};
         if (!salaId || from === undefined || to === undefined) return;
-        socket.to(salaId).emit('pieza_movida', { from, to, promotion });
+
+        const sala = salas.get(salaId);
+        const partida = partidas.get(salaId);
+        if (!sala || !partida || sala.estado !== 'en_curso') return;
+
+        const jugador = sala.jugadores.find((j) => j.socketId === socket.id);
+        if (!jugador) return;
+
+        const miColor = sala.jugadores.indexOf(jugador) === 0 ? PieceColor.WHITE : PieceColor.BLACK;
+        if (partida.turn !== miColor) {
+            socket.emit('movimiento_rechazado', { message: 'No es tu turno' });
+            return;
+        }
+
+        const promocionSolicitada = promotion || null;
+        const movimiento = partida
+            .legalMovesFrom(from)
+            .find((m) => m.to === to && (m.promotion || null) === promocionSolicitada);
+
+        if (!movimiento) {
+            socket.emit('movimiento_rechazado', { message: 'Jugada ilegal' });
+            return;
+        }
+
+        partida.makeMove(movimiento);
+        io.to(salaId).emit('pieza_movida', { from, to, promotion: promocionSolicitada });
     });
 
     socket.on('disconnect', () => {
