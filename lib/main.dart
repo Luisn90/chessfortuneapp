@@ -625,7 +625,7 @@ class _GameScreenState extends State<GameScreen> {
           content: Row(
             mainAxisSize: MainAxisSize.min,
             children: options.map((option) {
-              final symbol = ChessPiece(option.$1, color).symbol;
+              final symbol = ChessPiece(option.$1, color).unicodeSymbol;
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: OutlinedButton(
@@ -771,12 +771,18 @@ class _GameScreenState extends State<GameScreen> {
                           children: [
                             if (piece != null)
                               Text(
-                                piece.symbol,
+                                piece.unicodeSymbol,
                                 style: TextStyle(
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.bold,
+                                  fontSize: 34,
                                   color: piece.color == PieceColor.white ? Colors.white : Colors.black,
-                                  shadows: const [Shadow(blurRadius: 2, color: Colors.black45)],
+                                  shadows: [
+                                    Shadow(
+                                      blurRadius: 2,
+                                      color: piece.color == PieceColor.white
+                                          ? Colors.black45
+                                          : Colors.white38,
+                                    ),
+                                  ],
                                 ),
                               ),
                             if (isLegalTarget)
@@ -831,8 +837,8 @@ class _GameScreenState extends State<GameScreen> {
         children: [
           Text('$label: ', style: const TextStyle(color: Colors.grey, fontSize: 12)),
           Text(
-            pieces.map((p) => p.symbol).join(' '),
-            style: const TextStyle(color: Colors.white, fontSize: 14),
+            pieces.map((p) => p.unicodeSymbol).join(' '),
+            style: const TextStyle(color: Colors.white, fontSize: 16),
           ),
         ],
       ),

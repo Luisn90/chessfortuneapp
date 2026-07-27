@@ -31,6 +31,23 @@ class ChessPiece {
     final letter = letters[type]!;
     return color == PieceColor.white ? letter.toUpperCase() : letter;
   }
+
+  /// Glifo Unicode de la pieza para dibujarla en el tablero. Se usa siempre
+  /// el set "relleno" (♚♛♜♝♞♟) para ambos colores: el color visual real se
+  /// aplica por fuera (Text.color), ya que el set "contorno" (♔♕♖♗♘♙) se
+  /// renderiza distinto según la fuente/plataforma y puede volverse
+  /// invisible en algunos dispositivos.
+  String get unicodeSymbol {
+    const glifos = {
+      PieceType.king: '♚',
+      PieceType.queen: '♛',
+      PieceType.rook: '♜',
+      PieceType.bishop: '♝',
+      PieceType.knight: '♞',
+      PieceType.pawn: '♟',
+    };
+    return glifos[type]!;
+  }
 }
 
 class ChessMove {
