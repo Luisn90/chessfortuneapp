@@ -718,14 +718,22 @@ class _GameScreenState extends State<GameScreen> {
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 8,
                   ),
-                  itemBuilder: (context, index) {
-                    final row = index ~/ 8;
-                    final col = index % 8;
+                  itemBuilder: (context, displayIndex) {
+                    // Para las negras volteamos el tablero 180° (su propia
+                    // fila queda abajo), rotando índice de casilla visual a
+                    // índice real del tablero: la lógica del juego siempre
+                    // trabaja con el índice real (boardIndex).
+                    final boardIndex = widget.miColor == PieceColor.black
+                        ? 63 - displayIndex
+                        : displayIndex;
+
+                    final row = ChessEngine.row(boardIndex);
+                    final col = ChessEngine.col(boardIndex);
                     final isDarkSquare = (row + col) % 2 == 1;
-                    final isSelected = selectedIndex == index;
-                    final isLegalTarget = legalTargets.contains(index);
-                    final isKingInCheck = kingInCheckIndex == index;
-                    final piece = _engine.pieceAt(index);
+                    final isSelected = selectedIndex == boardIndex;
+                    final isLegalTarget = legalTargets.contains(boardIndex);
+                    final isKingInCheck = kingInCheckIndex == boardIndex;
+                    final piece = _engine.pieceAt(boardIndex);
 
                     Color squareColor = isDarkSquare
                         ? const Color(0xFF769656)
@@ -737,7 +745,7 @@ class _GameScreenState extends State<GameScreen> {
                     }
 
                     return GestureDetector(
-                      onTap: () => _onSquareTap(index),
+                      onTap: () => _onSquareTap(boardIndex),
                       child: Container(
                         color: squareColor,
                         child: Stack(
