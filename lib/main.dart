@@ -101,28 +101,16 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   late final AnimationController _controller;
   late final Animation<double> _iconFade;
   late final Animation<double> _iconScale;
-  late final Animation<double> _wordmarkFade;
-  late final Animation<Offset> _wordmarkOffset;
 
   @override
   void initState() {
     super.initState();
 
-    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
 
-    _iconFade = CurvedAnimation(
-      parent: _controller,
-      curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
-    );
+    _iconFade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
     _iconScale = Tween<double>(begin: 0.72, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: const Interval(0.0, 0.6, curve: Curves.easeOutCubic)),
-    );
-    _wordmarkFade = CurvedAnimation(
-      parent: _controller,
-      curve: const Interval(0.45, 1.0, curve: Curves.easeOut),
-    );
-    _wordmarkOffset = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero).animate(
-      CurvedAnimation(parent: _controller, curve: const Interval(0.45, 1.0, curve: Curves.easeOutCubic)),
+      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
     );
 
     _controller.forward();
@@ -150,25 +138,12 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         child: AnimatedBuilder(
           animation: _controller,
           builder: (context, child) {
-            return Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Opacity(
-                  opacity: _iconFade.value,
-                  child: Transform.scale(
-                    scale: _iconScale.value,
-                    child: SvgPicture.asset('assets/images/icon.svg', width: 128),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Opacity(
-                  opacity: _wordmarkFade.value,
-                  child: FractionalTranslation(
-                    translation: _wordmarkOffset.value,
-                    child: SvgPicture.asset('assets/images/logo.svg', width: 220),
-                  ),
-                ),
-              ],
+            return Opacity(
+              opacity: _iconFade.value,
+              child: Transform.scale(
+                scale: _iconScale.value,
+                child: SvgPicture.asset('assets/images/icon.svg', width: 160),
+              ),
             );
           },
         ),
