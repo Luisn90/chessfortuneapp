@@ -26,6 +26,14 @@ SupabaseClient get supabase => Supabase.instance.client;
 /// Color de fondo de toda la app.
 const Color appBackgroundColor = Color(0xFF050518);
 
+/// Dorado de marca (el mismo del logo) para acentos, botones y foco.
+const Color goldAccent = Color(0xFFE0A957);
+
+/// Caja de los inputs: un poco más oscura que el fondo general.
+const Color inputFillColor = Color(0xFF030310);
+
+const double _cornerRadius = 12;
+
 /// Tema de texto: Rubik para texto de párrafo/cuerpo, Young Serif para
 /// títulos y encabezados.
 TextTheme _buildTextTheme() {
@@ -61,7 +69,50 @@ class ChessSeedApp extends StatelessWidget {
         brightness: Brightness.dark,
         scaffoldBackgroundColor: appBackgroundColor,
         textTheme: _buildTextTheme(),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: goldAccent,
+          brightness: Brightness.dark,
+        ).copyWith(primary: goldAccent),
         appBarTheme: AppBarTheme(titleTextStyle: GoogleFonts.youngSerif(fontSize: 20, color: Colors.white)),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: inputFillColor,
+          labelStyle: const TextStyle(color: Colors.white60),
+          floatingLabelStyle: const TextStyle(color: goldAccent),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(_cornerRadius),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(_cornerRadius),
+            borderSide: const BorderSide(color: Colors.white24),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(_cornerRadius),
+            borderSide: const BorderSide(color: goldAccent, width: 2),
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: goldAccent,
+            foregroundColor: Colors.black,
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_cornerRadius)),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: goldAccent,
+            side: const BorderSide(color: goldAccent),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_cornerRadius)),
+          ),
+        ),
+        floatingActionButtonTheme: FloatingActionButtonThemeData(
+          backgroundColor: goldAccent,
+          foregroundColor: Colors.black,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_cornerRadius)),
+        ),
       ),
       routes: {
         '/lobby': (context) => const LobbyScreen(),
@@ -303,21 +354,16 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 24),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                  ),
                   onPressed: _cargando ? null : _enviar,
                   child: _cargando
                       ? const SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
                         )
                       : Text(
                           _modoRegistro ? 'Crear cuenta' : 'Iniciar sesión',
-                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                 ),
                 const SizedBox(height: 12),
