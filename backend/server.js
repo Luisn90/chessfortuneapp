@@ -36,6 +36,11 @@ const io = new Server(server, {
     }
 });
 
+// Porcentaje que se queda la app de cada pozo cuando una partida con apuesta
+// termina en jaque mate. En empate (ahogado) no se cobra comisión: se le
+// devuelve su apuesta a cada jugador tal cual.
+const RAKE_PORCENTAJE = 0.10;
+
 async function obtenerOCrearUsuario(userId) {
     const { data: existente, error: errorLectura } = await supabase
         .from('users')
@@ -56,6 +61,17 @@ async function obtenerOCrearUsuario(userId) {
     return nuevo;
 }
 
+// Suma (delta positivo) o resta (delta negativo) SEED de forma atómica.
+// Lanza si el usuario no existe o si restar dejaría el saldo en negativo.
+async function ajustarSaldo(userId, delta) {
+    const { data, error } = await supabase.rpc('increment_seed', {
+        p_user_id: userId,
+        p_delta: delta,
+    });
+    if (error) throw error;
+    return Number(data);
+}
+
 // === ENDPOINT: Simulación de recompensa por ver un video ===
 app.post('/api/reward-ad', async (req, res) => {
     const { userId } = req.body;
@@ -64,28 +80,34 @@ app.post('/api/reward-ad', async (req, res) => {
     }
 
     try {
-        const usuario = await obtenerOCrearUsuario(userId);
-        const nuevoSaldo = Number(usuario.seed_gratis) + 0.5;
+        await obtenerOCrearUsuario(userId);
+        const nuevoSaldo = await ajustarSaldo(userId, 0.5);
 
-        const { data: actualizado, error } = await supabase
-            .from('users')
-            .update({ seed_gratis: nuevoSaldo })
-            .eq('id', userId)
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        console.log(`[Anuncio] Usuario ${userId} vio un video. Nuevo saldo: ${actualizado.seed_gratis} SEED`);
+        console.log(`[Anuncio] Usuario ${userId} vio un video. Nuevo saldo: ${nuevoSaldo} SEED`);
 
         return res.json({
             success: true,
-            nuevo_saldo: Number(actualizado.seed_gratis),
+            nuevo_saldo: nuevoSaldo,
             message: "0.5 SEED acreditados correctamente."
         });
     } catch (error) {
         console.error('[Anuncio] Error:', error.message);
         return res.status(500).json({ success: false, message: 'Error al acreditar SEED' });
+    }
+});
+
+// === ENDPOINT: Consultar saldo actual ===
+app.get('/api/saldo/:userId', async (req, res) => {
+    try {
+        const usuario = await obtenerOCrearUsuario(req.params.userId);
+        return res.json({
+            success: true,
+            seed_gratis: Number(usuario.seed_gratis),
+            seed_real: Number(usuario.seed_real),
+        });
+    } catch (error) {
+        console.error('[Saldo] Error:', error.message);
+        return res.status(500).json({ success: false, message: 'Error al consultar saldo' });
     }
 });
 
@@ -115,6 +137,51 @@ function difundirSalas() {
     io.emit('salas_actualizadas', listaSalasPublicas());
 }
 
+// Liquida una partida terminada: si tenía apuesta, le paga al ganador el
+// pozo menos la comisión de la casa (jaque mate) o devuelve la apuesta a
+// cada quien sin comisión (ahogado/tablas). Sin apuesta, solo se avisa el
+// resultado. jugadores[0] siempre es blancas, jugadores[1] siempre negras.
+async function finalizarPartida(sala, partida, estado) {
+    const [blancas, negras] = sala.jugadores;
+    let ganadorUserId = null;
+    let saldos = null;
+
+    if (estado === 'checkmate') {
+        // partida.turn quedó en el color que no pudo mover: ese perdió.
+        const ganador = partida.turn === PieceColor.WHITE ? negras : blancas;
+        ganadorUserId = ganador.userId;
+    }
+
+    if (sala.costo > 0) {
+        try {
+            if (estado === 'checkmate') {
+                const pozo = sala.costo * 2;
+                const pago = Math.round(pozo * (1 - RAKE_PORCENTAJE) * 100) / 100;
+                const nuevoSaldo = await ajustarSaldo(ganadorUserId, pago);
+                saldos = { [ganadorUserId]: nuevoSaldo };
+            } else {
+                const nuevoSaldoBlancas = await ajustarSaldo(blancas.userId, sala.costo);
+                const nuevoSaldoNegras = await ajustarSaldo(negras.userId, sala.costo);
+                saldos = { [blancas.userId]: nuevoSaldoBlancas, [negras.userId]: nuevoSaldoNegras };
+            }
+        } catch (error) {
+            console.error('[Partida] Error al liquidar el pozo:', error.message);
+        }
+    }
+
+    sala.estado = 'finalizada';
+    partidas.delete(sala.id);
+
+    io.to(sala.id).emit('partida_terminada', {
+        resultado: estado === 'checkmate' ? 'jaque_mate' : 'ahogado',
+        ganadorUserId,
+        costo: sala.costo,
+        saldos,
+    });
+
+    console.log(`[Partida] Sala "${sala.nombre}" terminó (${estado})`);
+}
+
 io.on('connection', (socket) => {
     console.log(`Usuario conectado al servidor: ${socket.id}`);
 
@@ -142,9 +209,11 @@ io.on('connection', (socket) => {
         console.log(`[Lobby] ${username} creó la sala "${sala.nombre}" (${sala.id})`);
         socket.emit('sala_creada', { salaId: sala.id });
         difundirSalas();
+
+        if (sala.costo > 0) obtenerOCrearUsuario(userId).catch(() => {});
     });
 
-    socket.on('unirse_sala', (datos) => {
+    socket.on('unirse_sala', async (datos) => {
         const { salaId, userId, username } = datos || {};
         const sala = salas.get(salaId);
 
@@ -157,14 +226,47 @@ io.on('connection', (socket) => {
             return;
         }
 
+        if (sala.costo > 0) {
+            try {
+                await obtenerOCrearUsuario(userId);
+            } catch (error) {
+                socket.emit('error_sala', { message: 'No se pudo verificar tu cuenta' });
+                return;
+            }
+        }
+
         sala.jugadores.push({ userId, username: username || 'Jugador', socketId: socket.id });
         socket.join(sala.id);
 
         if (sala.jugadores.length >= 2) {
+            if (sala.costo > 0) {
+                const [creador, retador] = sala.jugadores;
+                try {
+                    await ajustarSaldo(creador.userId, -sala.costo);
+                } catch (error) {
+                    sala.jugadores = sala.jugadores.filter((j) => j.userId !== userId);
+                    const mensaje = { message: 'El creador de la sala ya no tiene saldo suficiente' };
+                    io.to(creador.socketId).emit('error_sala', mensaje);
+                    socket.emit('error_sala', mensaje);
+                    difundirSalas();
+                    return;
+                }
+                try {
+                    await ajustarSaldo(retador.userId, -sala.costo);
+                } catch (error) {
+                    await ajustarSaldo(creador.userId, sala.costo); // devolver lo cobrado
+                    sala.jugadores = sala.jugadores.filter((j) => j.userId !== userId);
+                    socket.emit('error_sala', { message: 'No tienes saldo suficiente para esta sala' });
+                    difundirSalas();
+                    return;
+                }
+            }
+
             sala.estado = 'en_curso';
             partidas.set(sala.id, new ChessEngine());
             io.to(sala.id).emit('partida_iniciada', {
                 salaId: sala.id,
+                costo: sala.costo,
                 jugadores: sala.jugadores.map((j) => ({ userId: j.userId, username: j.username })),
             });
             console.log(`[Lobby] Sala "${sala.nombre}" completa, partida iniciada`);
@@ -188,7 +290,7 @@ io.on('connection', (socket) => {
     // jugadores (incluido quien la envió); si no, solo avisa al remitente y
     // el tablero de nadie cambia (evita que un cliente modificado haga trampa
     // y evita desincronizar a los dos jugadores).
-    socket.on('mover_pieza', (datos) => {
+    socket.on('mover_pieza', async (datos) => {
         const { salaId, from, to, promotion } = datos || {};
         if (!salaId || from === undefined || to === undefined) return;
 
@@ -217,6 +319,11 @@ io.on('connection', (socket) => {
 
         partida.makeMove(movimiento);
         io.to(salaId).emit('pieza_movida', { from, to, promotion: promocionSolicitada });
+
+        const estadoPartida = partida.status;
+        if (estadoPartida === 'checkmate' || estadoPartida === 'stalemate') {
+            await finalizarPartida(sala, partida, estadoPartida);
+        }
     });
 
     socket.on('disconnect', () => {

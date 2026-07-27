@@ -1,11 +1,11 @@
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 
 import 'chess/chess_engine.dart';
+import 'identidad_jugador.dart';
 
 /// URL del backend (Express + Socket.IO) desplegado en Render.
 /// El plan gratuito "duerme" tras ~15 min sin tráfico: la primera
@@ -94,11 +94,12 @@ class LobbyScreen extends StatefulWidget {
 }
 
 class _LobbyScreenState extends State<LobbyScreen> {
-  double saldoSeed = 5.0; // Saldo inicial en la app
+  double saldoSeed = 0;
   bool cargandoVideo = false;
+  bool _identidadLista = false;
 
-  late final String _userId;
-  late final String _username;
+  late String _userId;
+  late String _username;
   late socket_io.Socket _socket;
 
   List<Map<String, dynamic>> _salasDisponibles = [];
@@ -108,10 +109,32 @@ class _LobbyScreenState extends State<LobbyScreen> {
   @override
   void initState() {
     super.initState();
-    final sufijo = Random().nextInt(9000) + 1000;
-    _userId = 'guest_$sufijo';
-    _username = 'Jugador$sufijo';
+    _inicializar();
+  }
+
+  Future<void> _inicializar() async {
+    final identidad = await IdentidadJugador.obtener();
+    if (!mounted) return;
+    setState(() {
+      _userId = identidad.userId;
+      _username = identidad.username;
+      _identidadLista = true;
+    });
     _conectarSocket();
+    _cargarSaldo();
+  }
+
+  Future<void> _cargarSaldo() async {
+    try {
+      final respuesta = await http.get(Uri.parse('$backendBaseUrl/api/saldo/$_userId'));
+      if (!mounted) return;
+      if (respuesta.statusCode == 200) {
+        final datos = jsonDecode(respuesta.body);
+        setState(() => saldoSeed = (datos['seed_gratis'] as num).toDouble());
+      }
+    } catch (_) {
+      // Si falla, se queda en 0 y se actualizará al ver un anuncio o jugar.
+    }
   }
 
   void _conectarSocket() {
@@ -151,19 +174,28 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
       final miColor = miIndice == 0 ? PieceColor.white : PieceColor.black;
       final oponente = jugadores[miIndice == 0 ? 1 : 0]['username'] as String?;
+      final costo = ((data['costo'] as num?) ?? 0).toDouble();
 
       setState(() => _miSalaId = null);
-      Navigator.push(
+      Navigator.push<double>(
         context,
         MaterialPageRoute(
           builder: (_) => GameScreen(
             socket: _socket,
             salaId: data['salaId'] as String,
             miColor: miColor,
+            userId: _userId,
+            costo: costo,
             oponenteNombre: oponente,
           ),
         ),
-      );
+      ).then((nuevoSaldo) {
+        if (nuevoSaldo != null && mounted) {
+          setState(() => saldoSeed = nuevoSaldo);
+        } else {
+          _cargarSaldo(); // por si acaso, sincronizamos con el servidor
+        }
+      });
     });
 
     _socket.on('error_sala', (data) {
@@ -223,7 +255,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final respuesta = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'userId': 'google_123'}), // ID simulado por ahora
+        body: jsonEncode({'userId': _userId}),
       );
 
       if (!mounted) return;
@@ -254,6 +286,12 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_identidadLista) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lobby Principal'),
@@ -263,7 +301,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Chip(
               avatar: const Icon(Icons.monetization_on, color: Colors.amber, size: 20),
-              label: Text('$saldoSeed SEED', style: const TextStyle(fontWeight: FontWeight.bold)),
+              label: Text(
+                '${saldoSeed.toStringAsFixed(2)} SEED',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
               backgroundColor: Colors.black54,
             ),
           )
@@ -449,6 +490,8 @@ class GameScreen extends StatefulWidget {
   final socket_io.Socket socket;
   final String salaId;
   final PieceColor miColor;
+  final String userId;
+  final double costo;
   final String? oponenteNombre;
 
   const GameScreen({
@@ -456,6 +499,8 @@ class GameScreen extends StatefulWidget {
     required this.socket,
     required this.salaId,
     required this.miColor,
+    required this.userId,
+    this.costo = 0,
     this.oponenteNombre,
   });
 
@@ -473,11 +518,13 @@ class _GameScreenState extends State<GameScreen> {
   void initState() {
     super.initState();
     // El servidor es la autoridad: toda jugada (mía o del rival) solo se
-    // aplica al tablero cuando él la confirma por "pieza_movida". Así el
-    // tablero nunca puede desincronizarse entre los dos jugadores.
+    // aplica al tablero cuando él la confirma por "pieza_movida", y el fin
+    // de la partida (con el resultado y el reparto del pozo, si había
+    // apuesta) también lo decide y anuncia el servidor.
     widget.socket.on('pieza_movida', _onMovimientoConfirmado);
     widget.socket.on('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.on('rival_desconectado', _onRivalDesconectado);
+    widget.socket.on('partida_terminada', _onPartidaTerminada);
   }
 
   @override
@@ -485,6 +532,7 @@ class _GameScreenState extends State<GameScreen> {
     widget.socket.off('pieza_movida', _onMovimientoConfirmado);
     widget.socket.off('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.off('rival_desconectado', _onRivalDesconectado);
+    widget.socket.off('partida_terminada', _onPartidaTerminada);
     super.dispose();
   }
 
@@ -593,18 +641,36 @@ class _GameScreenState extends State<GameScreen> {
     });
   }
 
-  /// Aplica una jugada al tablero (propia o recibida del rival).
+  /// Aplica una jugada al tablero (propia o recibida del rival). El fin de
+  /// la partida lo anuncia el servidor aparte, vía "partida_terminada"
+  /// (ver [_onPartidaTerminada]), junto con el reparto del pozo si había
+  /// apuesta — no se decide localmente.
   void _aplicarMovimiento(ChessMove move) {
     setState(() {
       _engine.makeMove(move);
       selectedIndex = null;
       _legalMovesFromSelection = [];
     });
+  }
 
-    final newStatus = _engine.status;
-    if (newStatus == GameStatus.checkmate || newStatus == GameStatus.stalemate) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _showGameOverDialog(newStatus));
-    }
+  void _onPartidaTerminada(dynamic data) {
+    if (!mounted) return;
+    final datos = Map<String, dynamic>.from(data as Map);
+    final resultado = datos['resultado'] as String; // 'jaque_mate' | 'ahogado'
+    final ganadorUserId = datos['ganadorUserId'] as String?;
+    final saldos = datos['saldos'] == null
+        ? null
+        : Map<String, dynamic>.from(datos['saldos'] as Map);
+    final miNuevoSaldo = saldos?[widget.userId] as num?;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showGameOverDialog(
+        resultado: resultado,
+        gane: ganadorUserId == widget.userId,
+        empate: ganadorUserId == null,
+        miNuevoSaldo: miNuevoSaldo?.toDouble(),
+      );
+    });
   }
 
   Future<PieceType?> _askPromotion() {
@@ -647,23 +713,52 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  void _showGameOverDialog(GameStatus finalStatus) {
-    final loserColor = _engine.turn; // El jugador sin movimientos.
-    final message = finalStatus == GameStatus.checkmate
-        ? 'Jaque mate. Ganan las ${loserColor == PieceColor.white ? 'negras' : 'blancas'}.'
-        : 'Ahogado (tablas): ${loserColor == PieceColor.white ? 'blancas' : 'negras'} no tienen movimientos legales.';
+  void _showGameOverDialog({
+    required String resultado,
+    required bool gane,
+    required bool empate,
+    double? miNuevoSaldo,
+  }) {
+    final resultadoTexto = resultado == 'jaque_mate'
+        ? (gane ? 'Jaque mate. ¡Ganaste!' : 'Jaque mate. Perdiste.')
+        : 'Tablas por ahogado.';
+
+    String? mensajeFinanciero;
+    if (widget.costo > 0) {
+      if (empate) {
+        mensajeFinanciero = 'Se te devolvió tu apuesta de ${widget.costo.toStringAsFixed(2)} SEED.';
+      } else if (gane) {
+        mensajeFinanciero = 'Ganaste el pozo (se descontó la comisión de la casa).';
+      } else {
+        mensajeFinanciero = 'Perdiste tu apuesta de ${widget.costo.toStringAsFixed(2)} SEED.';
+      }
+    }
 
     showDialog<void>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2C),
         title: const Text('Partida finalizada', style: TextStyle(color: Colors.white)),
-        content: Text(message, style: const TextStyle(color: Colors.white70)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(resultadoTexto, style: const TextStyle(color: Colors.white70)),
+            if (mensajeFinanciero != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                mensajeFinanciero,
+                style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () {
               Navigator.of(context).pop(); // cierra el diálogo
-              Navigator.of(context).pop(); // vuelve al lobby
+              Navigator.of(context).pop(miNuevoSaldo); // vuelve al lobby con el saldo actualizado
             },
             child: const Text('Volver al lobby'),
           ),
