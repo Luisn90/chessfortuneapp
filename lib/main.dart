@@ -609,128 +609,304 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Hola, $_username'),
-        backgroundColor: const Color(0xFF2C2C2C),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-            child: Chip(
-              avatar: const Icon(Icons.monetization_on, color: Colors.amber, size: 20),
-              label: Text(
-                '${saldoSeed.toStringAsFixed(2)} SEED',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              backgroundColor: Colors.black54,
-            ),
-          ),
-          IconButton(
-            tooltip: 'Cerrar sesión',
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              await supabase.auth.signOut();
-              if (!context.mounted) return;
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const LoginScreen()),
-                (route) => false,
-              );
-            },
-          ),
-        ],
-      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _crearPartida,
         icon: const Icon(Icons.add),
-        label: const Text('Crear partida'),
+        label: const Text('Crear Partida'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  'Salas Disponibles',
-                  style: GoogleFonts.youngSerif(fontSize: 22, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(width: 8),
-                if (_conectando)
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+      bottomNavigationBar: _buildBottomNav(),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              const SizedBox(height: 16),
+              _buildPromoBanner(),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Hola, $_username',
+                    style: GoogleFonts.youngSerif(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold),
                   ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _salasDisponibles.isEmpty
-                  ? Center(
-                      child: Text(
-                        _conectando
-                            ? 'Conectando al lobby...'
-                            : 'No hay salas abiertas. ¡Crea una!',
-                        style: const TextStyle(color: Colors.grey),
+                  Row(
+                    children: [
+                      const Text('Salas disponibles ', style: TextStyle(color: Colors.white60, fontSize: 13)),
+                      Text(
+                        '${_salasDisponibles.length}',
+                        style: const TextStyle(color: goldAccent, fontWeight: FontWeight.bold, fontSize: 13),
                       ),
-                    )
-                  : ListView.separated(
-                      itemCount: _salasDisponibles.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 12),
-                      itemBuilder: (context, index) {
-                        final sala = _salasDisponibles[index];
-                        return _buildRoomCard(sala);
-                      },
-                    ),
-            ),
-            Card(
-              color: const Color(0xFF2C2C2C),
-              child: ListTile(
-                leading: const Icon(Icons.video_library, color: Colors.redAccent),
-                title: const Text('¿Te quedaste sin SEED?'),
-                subtitle: const Text('Mira 2 videos cortos para recargar 1.0 SEED'),
-                trailing: ElevatedButton(
-                  onPressed: cargandoVideo ? null : simularVideoAd,
-                  child: cargandoVideo
-                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Ver'),
-                ),
+                      if (_conectando) ...[
+                        const SizedBox(width: 8),
+                        const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
               ),
-            )
-          ],
+              const SizedBox(height: 12),
+              Expanded(
+                child: _salasDisponibles.isEmpty
+                    ? Center(
+                        child: Text(
+                          _conectando
+                              ? 'Conectando al lobby...'
+                              : 'No hay salas abiertas. ¡Crea una!',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: _salasDisponibles.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          final sala = _salasDisponibles[index];
+                          return _buildRoomCard(sala);
+                        },
+                      ),
+              ),
+              const SizedBox(height: 76), // deja espacio libre para el FAB flotante
+            ],
+          ),
         ),
       ),
     );
   }
 
+  Widget _buildHeader() {
+    return Row(
+      children: [
+        SvgPicture.asset('assets/images/logo.svg', width: 130),
+        const Spacer(),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: inputFillColor,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SvgPicture.asset('assets/images/coin.svg', width: 18, height: 18),
+              const SizedBox(width: 6),
+              Text(
+                saldoSeed.toStringAsFixed(0),
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        PopupMenuButton<String>(
+          tooltip: 'Cuenta',
+          offset: const Offset(0, 45),
+          color: const Color(0xFF14142C),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_cornerRadius)),
+          onSelected: (valor) async {
+            if (valor == 'salir') {
+              await supabase.auth.signOut();
+              if (!mounted) return;
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            }
+          },
+          itemBuilder: (context) => const [
+            PopupMenuItem(
+              value: 'salir',
+              child: Row(
+                children: [
+                  Icon(Icons.logout, color: Colors.redAccent, size: 18),
+                  SizedBox(width: 8),
+                  Text('Cerrar sesión', style: TextStyle(color: Colors.white)),
+                ],
+              ),
+            ),
+          ],
+          child: const CircleAvatar(
+            radius: 20,
+            backgroundColor: Colors.white12,
+            child: Icon(Icons.person, color: Colors.white70),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPromoBanner() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: Material(
+        color: const Color(0xFF1B1B3A),
+        child: InkWell(
+          onTap: cargandoVideo ? null : simularVideoAd,
+          child: SizedBox(
+            height: 108,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned(
+                  left: -18,
+                  bottom: -22,
+                  child: Transform.rotate(
+                    angle: 0.35,
+                    child: SvgPicture.asset('assets/images/coin.svg', width: 66),
+                  ),
+                ),
+                Positioned(
+                  left: 26,
+                  top: -14,
+                  child: Transform.rotate(
+                    angle: -0.25,
+                    child: SvgPicture.asset('assets/images/coin.svg', width: 60),
+                  ),
+                ),
+                Positioned(
+                  left: 46,
+                  bottom: 6,
+                  child: Transform.rotate(
+                    angle: 0.1,
+                    child: SvgPicture.asset('assets/images/coin.svg', width: 46),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(left: 118, right: 16, top: 16, bottom: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        '¿Te quedaste sin seeds?',
+                        style: GoogleFonts.youngSerif(color: goldAccent, fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Mira 2 videos cortos para recargar 1.0 Seeds',
+                        style: TextStyle(color: Colors.white60, fontSize: 12),
+                      ),
+                      if (cargandoVideo) ...[
+                        const SizedBox(height: 8),
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: goldAccent),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return BottomNavigationBar(
+      currentIndex: 0,
+      backgroundColor: const Color(0xFF0A0A20),
+      selectedItemColor: goldAccent,
+      unselectedItemColor: Colors.white54,
+      type: BottomNavigationBarType.fixed,
+      onTap: (indice) {
+        if (indice == 0) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Próximamente')),
+        );
+      },
+      items: const [
+        BottomNavigationBarItem(icon: Icon(Icons.grid_view_rounded), label: 'Salas'),
+        BottomNavigationBarItem(icon: Icon(Icons.emoji_events_outlined), label: 'Tournament'),
+        BottomNavigationBarItem(icon: Icon(Icons.flag_outlined), label: 'Configuración'),
+      ],
+    );
+  }
+
+  String _tiempoRelativo(dynamic creadaEnMs) {
+    final ms = (creadaEnMs as num?)?.toInt();
+    if (ms == null) return '';
+    final diferencia = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+    if (diferencia.inMinutes < 1) return 'Now';
+    if (diferencia.inMinutes < 60) return '${diferencia.inMinutes} min';
+    if (diferencia.inHours < 24) return '${diferencia.inHours} h';
+    return '${diferencia.inDays} d';
+  }
+
   Widget _buildRoomCard(Map<String, dynamic> sala) {
     final esMiSala = sala['id'] == _miSalaId;
     final costo = (sala['costo'] as num?) ?? 0;
-    final costoTexto = costo > 0 ? '$costo SEED' : 'Gratis';
-    final costoColor = costo > 0 ? Colors.amber : Colors.green;
+    final creadoPor = sala['creadorNombre'] ?? 'Jugador';
 
-    return Card(
-      color: const Color(0xFF2C2C2C),
-      child: ListTile(
-        title: Text(sala['nombre'] ?? 'Sala', style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text('Creada por ${sala['creadorNombre'] ?? 'Jugador'}'),
-        trailing: esMiSala
-            ? TextButton.icon(
-                onPressed: _cancelarMiSala,
-                icon: const Icon(Icons.close, color: Colors.redAccent, size: 18),
-                label: const Text('Cancelar', style: TextStyle(color: Colors.redAccent)),
-              )
-            : Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(costoTexto, style: TextStyle(color: costoColor, fontWeight: FontWeight.bold)),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: () => _unirseAPartida(sala['id'] as String),
-                    child: const Text('Unirse'),
-                  ),
-                ],
+    return Material(
+      color: const Color(0xFF12122A),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: esMiSala ? null : () => _unirseAPartida(sala['id'] as String),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 18,
+                backgroundColor: Colors.white12,
+                child: Icon(Icons.person, color: Colors.white54, size: 20),
               ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(creadoPor, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    Text(
+                      sala['nombre'] ?? 'Sala',
+                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              if (esMiSala)
+                IconButton(
+                  tooltip: 'Cancelar sala',
+                  icon: const Icon(Icons.close, color: Colors.redAccent),
+                  onPressed: _cancelarMiSala,
+                )
+              else
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      _tiempoRelativo(sala['creadaEn']),
+                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SvgPicture.asset('assets/images/coin.svg', width: 14, height: 14),
+                        const SizedBox(width: 4),
+                        Text(
+                          costo > 0 ? costo.toStringAsFixed(costo == costo.roundToDouble() ? 0 : 2) : 'Gratis',
+                          style: const TextStyle(color: goldAccent, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

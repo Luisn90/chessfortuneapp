@@ -130,6 +130,7 @@ function listaSalasPublicas() {
             costo: sala.costo,
             creadorId: sala.creadorId,
             creadorNombre: sala.jugadores[0]?.username ?? 'Jugador',
+            creadaEn: sala.creadaEn,
         }));
 }
 
@@ -201,6 +202,7 @@ io.on('connection', (socket) => {
             costo: Number(costo) || 0,
             creadorId: userId,
             estado: 'esperando',
+            creadaEn: Date.now(),
             jugadores: [{ userId, username: username || 'Jugador', socketId: socket.id }],
         };
         salas.set(sala.id, sala);
