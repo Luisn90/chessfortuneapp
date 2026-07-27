@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -219,12 +221,47 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _modoRegistro = false;
   bool _cargando = false;
 
+  StreamSubscription<AuthState>? _authSub;
+
+  @override
+  void initState() {
+    super.initState();
+    // El login con Google es un flujo OAuth: en Android, el navegador
+    // vuelve a esta misma instancia de la app por un enlace (deep link),
+    // no por un valor de retorno directo como email/contraseña. Por eso
+    // hay que escuchar el cambio de sesión en vez de esperarlo del await.
+    _authSub = supabase.auth.onAuthStateChange.listen((estado) {
+      if (estado.event == AuthChangeEvent.signedIn && mounted) {
+        Navigator.pushReplacementNamed(context, '/lobby');
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _authSub?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     _usernameController.dispose();
     super.dispose();
+  }
+
+  Future<void> _iniciarSesionConGoogle() async {
+    setState(() => _cargando = true);
+    try {
+      await supabase.auth.signInWithOAuth(
+        OAuthProvider.google,
+        redirectTo: kIsWeb ? null : 'chessfortune://login-callback',
+      );
+      // La navegación al lobby ocurre en el listener de onAuthStateChange
+      // de arriba, cuando el flujo OAuth termine y vuelva a la app.
+    } on AuthException catch (e) {
+      _mostrarError(_traducirErrorAuth(e));
+    } catch (e) {
+      _mostrarError('No se pudo iniciar sesión con Google');
+    } finally {
+      if (mounted) setState(() => _cargando = false);
+    }
   }
 
   Future<void> _enviar() async {
@@ -365,6 +402,29 @@ class _LoginScreenState extends State<LoginScreen> {
                           _modoRegistro ? 'Crear cuenta' : 'Iniciar sesión',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
+                ),
+                const SizedBox(height: 16),
+                const Row(
+                  children: [
+                    Expanded(child: Divider(color: Colors.white24)),
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('o', style: TextStyle(color: Colors.white38)),
+                    ),
+                    Expanded(child: Divider(color: Colors.white24)),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _cargando ? null : _iniciarSesionConGoogle,
+                  icon: const Icon(Icons.g_mobiledata, size: 26),
+                  label: const Text('Iniciar sesión con Google'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    minimumSize: const Size(double.infinity, 0),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextButton(
