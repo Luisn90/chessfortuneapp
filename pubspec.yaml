@@ -41,6 +41,22 @@ dependencies:
   flutter_svg: ^2.1.0
   google_fonts: ^6.3.0
 
+# app_links (traído por supabase_flutter, para el enlace de regreso de
+# Google OAuth) falla al compilar Android en este proyecto: su
+# build.gradle usa "compileSdk = flutter.compileSdkVersion", que aquí
+# revienta con "unknown property 'flutter'". La versión 7.x lo arregla
+# (usa un número fijo), pero requiere Dart >=3.6 y nuestro SDK actual
+# es 3.5.3 — por eso seguimos en 6.4.1.
+#
+# ARREGLO APLICADO A MANO (no viaja con el repo, hay que repetirlo en
+# cualquier máquina/CI nueva o tras un `flutter pub cache repair`):
+# editar compileSdk = flutter.compileSdkVersion -> compileSdk = 36 en
+#   <PUB_CACHE>/hosted/pub.dev/app_links-6.4.1/android/build.gradle
+# El arreglo definitivo es actualizar el SDK de Flutter/Dart y subir a
+# app_links 7.x (quitando este override).
+dependency_overrides:
+  app_links: 6.4.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
