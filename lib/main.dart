@@ -46,6 +46,21 @@ class ChessSeedApp extends StatelessWidget {
         // Navigator.push(MaterialPageRoute(...)) desde el lobby.
       },
       home: supabase.auth.currentSession != null ? const LobbyScreen() : const LoginScreen(),
+      // Flutter Web (CanvasKit) resuelve cada glifo Unicode nuevo de forma
+      // perezosa la primera vez que se pinta, y hasta que termina muestra
+      // el glifo equivocado (se corrige recién en el próximo repintado).
+      // Precalentamos aquí, fuera de la vista, todos los símbolos de
+      // piezas para que ya estén listos cuando se abra el tablero.
+      builder: (context, child) => Stack(
+        children: [
+          if (child != null) child,
+          const Positioned(
+            left: -1000,
+            top: -1000,
+            child: Text('♔♕♖♗♘♙♚♛♜♝♞♟', style: TextStyle(fontSize: 1)),
+          ),
+        ],
+      ),
     );
   }
 }
