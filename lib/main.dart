@@ -25,6 +25,53 @@ const String supabaseAnonKey = 'sb_publishable_rNGKmrRjqRehf2fC9RGBow_yrV_A7CB';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
+/// Dibuja el glifo Unicode de una pieza con relleno + contorno real (no una
+/// sombra difusa): dos Text superpuestos, uno solo con trazo (el borde) y
+/// otro con relleno encima. Da un contraste mucho más nítido, sobre todo
+/// para las negras, que necesitan un borde blanco marcado para no perderse
+/// contra las casillas oscuras.
+class ChessPieceGlyph extends StatelessWidget {
+  final String simbolo;
+  final bool esBlanca;
+  final double fontSize;
+
+  const ChessPieceGlyph({
+    super.key,
+    required this.simbolo,
+    required this.esBlanca,
+    this.fontSize = 34,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorBorde = esBlanca ? Colors.black87 : Colors.white;
+    final anchoBorde = esBlanca ? 1.6 : 3.2;
+
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Text(
+          simbolo,
+          style: TextStyle(
+            fontSize: fontSize,
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = anchoBorde
+              ..color = colorBorde,
+          ),
+        ),
+        Text(
+          simbolo,
+          style: TextStyle(
+            fontSize: fontSize,
+            color: esBlanca ? Colors.white : Colors.black,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Color de fondo de toda la app.
 const Color appBackgroundColor = Color(0xFF050518);
 
@@ -134,7 +181,11 @@ class ChessSeedApp extends StatelessWidget {
           const Positioned(
             left: -1000,
             top: -1000,
-            child: Text('♔♕♖♗♘♙♚♛♜♝♞♟', style: TextStyle(fontSize: 1)),
+            // El tamaño debe coincidir con el de las piezas reales del
+            // tablero (34): CanvasKit cachea el glifo rasterizado por
+            // combinación de fuente+tamaño, así que precalentar a un
+            // tamaño distinto (antes: 1) no evitaba el flash al tamaño real.
+            child: Text('♔♕♖♗♘♙♚♛♜♝♞♟', style: TextStyle(fontSize: 34)),
           ),
         ],
       ),
@@ -1479,20 +1530,10 @@ class _GameScreenState extends State<GameScreen> {
                           alignment: Alignment.center,
                           children: [
                             if (piece != null)
-                              Text(
-                                piece.unicodeSymbol,
-                                style: TextStyle(
-                                  fontSize: 34,
-                                  color: piece.color == PieceColor.white ? Colors.white : Colors.black,
-                                  shadows: [
-                                    Shadow(
-                                      blurRadius: 2,
-                                      color: piece.color == PieceColor.white
-                                          ? Colors.black45
-                                          : Colors.white38,
-                                    ),
-                                  ],
-                                ),
+                              ChessPieceGlyph(
+                                simbolo: piece.unicodeSymbol,
+                                esBlanca: piece.color == PieceColor.white,
+                                fontSize: 36,
                               ),
                             if (isLegalTarget)
                               Container(
