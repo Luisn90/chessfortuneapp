@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -21,6 +23,26 @@ const String supabaseAnonKey = 'sb_publishable_rNGKmrRjqRehf2fC9RGBow_yrV_A7CB';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
+/// Color de fondo de toda la app.
+const Color appBackgroundColor = Color(0xFF050518);
+
+/// Tema de texto: Rubik para texto de párrafo/cuerpo, Young Serif para
+/// títulos y encabezados.
+TextTheme _buildTextTheme() {
+  final base = GoogleFonts.rubikTextTheme(ThemeData.dark().textTheme);
+  final serif = GoogleFonts.youngSerifTextTheme(ThemeData.dark().textTheme);
+  return base.copyWith(
+    displayLarge: serif.displayLarge,
+    displayMedium: serif.displayMedium,
+    displaySmall: serif.displaySmall,
+    headlineLarge: serif.headlineLarge,
+    headlineMedium: serif.headlineMedium,
+    headlineSmall: serif.headlineSmall,
+    titleLarge: serif.titleLarge,
+    titleMedium: serif.titleMedium,
+  );
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
@@ -37,7 +59,9 @@ class ChessSeedApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+        scaffoldBackgroundColor: appBackgroundColor,
+        textTheme: _buildTextTheme(),
+        appBarTheme: AppBarTheme(titleTextStyle: GoogleFonts.youngSerif(fontSize: 20, color: Colors.white)),
       ),
       routes: {
         '/lobby': (context) => const LobbyScreen(),
@@ -185,12 +209,7 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.casino, size: 72, color: Colors.amber),
-                const SizedBox(height: 16),
-                const Text(
-                  'CHESS SEED',
-                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
-                ),
+                SvgPicture.asset('assets/images/logo.svg', width: 260),
                 const SizedBox(height: 8),
                 const Text(
                   'Juega, gana y acumula tokens',
@@ -522,9 +541,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
           children: [
             Row(
               children: [
-                const Text(
+                Text(
                   'Salas Disponibles',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                  style: GoogleFonts.youngSerif(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(width: 8),
                 if (_conectando)

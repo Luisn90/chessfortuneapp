@@ -1,3 +1,4 @@
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -16,7 +17,7 @@ void main() {
   testWidgets('App arranca en la pantalla de login', (WidgetTester tester) async {
     await tester.pumpWidget(const ChessSeedApp());
 
-    expect(find.text('CHESS SEED'), findsOneWidget);
+    expect(find.byType(SvgPicture), findsOneWidget);
     expect(find.text('Iniciar sesión'), findsOneWidget);
   });
 }
