@@ -251,7 +251,11 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await supabase.auth.signInWithOAuth(
         OAuthProvider.google,
-        redirectTo: kIsWeb ? null : 'chessfortune://login-callback',
+        // En web, mandamos explícitamente el origen actual (protocolo+host+
+        // puerto) en vez de dejarlo en null: si no coincide con nada, Supabase
+        // cae de vuelta al "Site URL" configurado en el dashboard, que puede
+        // no coincidir con el puerto real que estemos usando en desarrollo.
+        redirectTo: kIsWeb ? Uri.base.origin : 'chessfortune://login-callback',
       );
       // La navegación al lobby ocurre en el listener de onAuthStateChange
       // de arriba, cuando el flujo OAuth termine y vuelva a la app.
