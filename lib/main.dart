@@ -81,6 +81,9 @@ const Color goldAccent = Color(0xFFE0A957);
 /// Caja de los inputs: un poco más oscura que el fondo general.
 const Color inputFillColor = Color(0xFF030310);
 
+/// Fondo de los diálogos/modales.
+const Color dialogSurfaceColor = Color(0xFF2C2C2C);
+
 const double _cornerRadius = 12;
 
 /// Tema de texto: Rubik para texto de párrafo/cuerpo, Young Serif para
@@ -123,6 +126,14 @@ class ChessSeedApp extends StatelessWidget {
           brightness: Brightness.dark,
         ).copyWith(primary: goldAccent),
         appBarTheme: AppBarTheme(titleTextStyle: GoogleFonts.youngSerif(fontSize: 20, color: Colors.white)),
+        // Estilo único para todos los modales, en vez de repetirlo (y que se
+        // desincronice) en cada AlertDialog.
+        dialogTheme: DialogTheme(
+          backgroundColor: dialogSurfaceColor,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          titleTextStyle: GoogleFonts.youngSerif(fontSize: 22, color: Colors.white),
+          contentTextStyle: GoogleFonts.rubik(fontSize: 14, color: Colors.white70),
+        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: inputFillColor,
@@ -388,12 +399,10 @@ class _LoginScreenState extends State<LoginScreen> {
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF2C2C2C),
-        title: const Text('Confirma tu correo', style: TextStyle(color: Colors.white)),
+        title: const Text('Confirma tu correo'),
         content: Text(
           'Te enviamos un enlace de confirmación a $email. Ábrelo desde ese '
           'correo y después vuelve aquí a iniciar sesión.',
-          style: const TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
@@ -1056,32 +1065,28 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      backgroundColor: const Color(0xFF2C2C2C),
-      title: const Text('Crear partida', style: TextStyle(color: Colors.white)),
+      title: const Text('Crear partida'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           TextField(
             controller: _controller,
             style: const TextStyle(color: Colors.white),
             decoration: const InputDecoration(labelText: 'Nombre de la sala'),
           ),
-          const SizedBox(height: 16),
-          Row(
+          const SizedBox(height: 20),
+          const Text('Costo', style: TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(height: 8),
+          // Wrap en vez de Row: los chips bajan de línea si no caben, en vez
+          // de desbordarse (el ancho del diálogo es fijo y no da para los dos
+          // en una sola fila junto a la etiqueta).
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              const Text('Costo:', style: TextStyle(color: Colors.white70)),
-              const SizedBox(width: 12),
-              ChoiceChip(
-                label: const Text('Gratis'),
-                selected: _costo == 0,
-                onSelected: (_) => setState(() => _costo = 0),
-              ),
-              const SizedBox(width: 8),
-              ChoiceChip(
-                label: const Text('1.0 SEED'),
-                selected: _costo == 1,
-                onSelected: (_) => setState(() => _costo = 1),
-              ),
+              _buildCostoChip('Gratis', 0),
+              _buildCostoChip('1.0 SEED', 1),
             ],
           ),
         ],
@@ -1100,6 +1105,24 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
           child: const Text('Crear'),
         ),
       ],
+    );
+  }
+
+  Widget _buildCostoChip(String etiqueta, double valor) {
+    final seleccionado = _costo == valor;
+    return ChoiceChip(
+      label: Text(etiqueta),
+      selected: seleccionado,
+      onSelected: (_) => setState(() => _costo = valor),
+      showCheckmark: false,
+      backgroundColor: Colors.white10,
+      selectedColor: goldAccent,
+      labelStyle: TextStyle(
+        color: seleccionado ? Colors.black : Colors.white70,
+        fontWeight: seleccionado ? FontWeight.bold : FontWeight.normal,
+      ),
+      side: BorderSide(color: seleccionado ? goldAccent : Colors.white24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_cornerRadius)),
     );
   }
 }
@@ -1284,13 +1307,11 @@ class _GameScreenState extends State<GameScreen> {
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF2C2C2C),
-        title: const Text('¿Rendirte?', style: TextStyle(color: Colors.white)),
+        title: const Text('¿Rendirte?'),
         content: Text(
           widget.costo > 0
               ? 'Perderás la partida y tu apuesta de ${widget.costo.toStringAsFixed(2)} SEED.'
               : 'Perderás la partida.',
-          style: const TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
@@ -1344,24 +1365,24 @@ class _GameScreenState extends State<GameScreen> {
           (PieceType.knight, 'Caballo'),
         ];
         return AlertDialog(
-          backgroundColor: const Color(0xFF2C2C2C),
-          title: const Text('Promoción de peón', style: TextStyle(color: Colors.white)),
-          content: Row(
-            mainAxisSize: MainAxisSize.min,
+          title: const Text('Promoción de peón'),
+          // Wrap para que las 4 opciones bajen de línea si no caben a lo
+          // ancho del diálogo, en vez de desbordarse.
+          content: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
             children: options.map((option) {
               final symbol = ChessPiece(option.$1, color).unicodeSymbol;
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(context).pop(option.$1),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(symbol, style: const TextStyle(fontSize: 22, color: Colors.amber)),
-                      const SizedBox(height: 4),
-                      Text(option.$2, style: const TextStyle(color: Colors.white, fontSize: 12)),
-                    ],
-                  ),
+              return OutlinedButton(
+                onPressed: () => Navigator.of(context).pop(option.$1),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(symbol, style: const TextStyle(fontSize: 24, color: goldAccent)),
+                    const SizedBox(height: 4),
+                    Text(option.$2, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  ],
                 ),
               );
             }).toList(),
@@ -1404,24 +1425,23 @@ class _GameScreenState extends State<GameScreen> {
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF2C2C2C),
-        title: const Text('Partida finalizada', style: TextStyle(color: Colors.white)),
+        title: const Text('Partida finalizada'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(resultadoTexto, style: const TextStyle(color: Colors.white70)),
+            Text(resultadoTexto),
             if (mensajeFinanciero != null) ...[
               const SizedBox(height: 8),
               Text(
                 mensajeFinanciero,
-                style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
+                style: const TextStyle(color: goldAccent, fontWeight: FontWeight.bold),
               ),
             ],
           ],
         ),
         actions: [
-          TextButton(
+          ElevatedButton(
             onPressed: () {
               Navigator.of(context).pop(); // cierra el diálogo
               Navigator.of(context).pop(miNuevoSaldo); // vuelve al lobby con el saldo actualizado
