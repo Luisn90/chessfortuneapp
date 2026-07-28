@@ -111,6 +111,30 @@ app.get('/api/saldo/:userId', async (req, res) => {
     }
 });
 
+// === ENDPOINT: Actualizar el nombre visible del jugador ===
+// El nombre "de verdad" vive en Supabase Auth (user_metadata); acá guardamos
+// una copia porque es lo que se muestra en el lobby y en las partidas.
+app.post('/api/perfil', async (req, res) => {
+    const { userId, username } = req.body;
+    if (!userId || !username) {
+        return res.status(400).json({ success: false, message: 'Faltan userId o username' });
+    }
+
+    try {
+        await obtenerOCrearUsuario(userId, username);
+        const { error } = await supabase
+            .from('users')
+            .update({ username: String(username).slice(0, 40) })
+            .eq('id', userId);
+        if (error) throw error;
+
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('[Perfil] Error:', error.message);
+        return res.status(500).json({ success: false, message: 'Error al actualizar el perfil' });
+    }
+});
+
 // === SOCKET.IO: Lobby de salas en tiempo real ===
 // Estado en memoria (se reinicia si el servidor se reinicia/duerme).
 // sala: { id, nombre, costo, creadorId, estado: 'esperando'|'en_curso', jugadores: [{ userId, username, socketId }] }

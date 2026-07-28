@@ -86,6 +86,32 @@ const Color dialogSurfaceColor = Color(0xFF2C2C2C);
 
 const double _cornerRadius = 12;
 
+/// Largo máximo del nombre visible de un jugador.
+const int maxLargoUsername = 16;
+
+/// Nombre a mostrar de un jugador.
+///
+/// Si la cuenta no tiene nombre elegido (login con Google, o registro sin
+/// completarlo), se deriva de la parte del correo anterior a la @ y se
+/// recorta. Nunca se devuelve el correo completo: este nombre no solo se
+/// muestra al propio usuario, también viaja al servidor y lo ven los demás
+/// jugadores en el lobby y en la partida.
+String nombreVisible({String? username, String? email}) {
+  final elegido = username?.trim() ?? '';
+  if (elegido.isNotEmpty) return _recortar(elegido);
+
+  final correo = email?.trim() ?? '';
+  if (correo.isNotEmpty) {
+    final local = correo.split('@').first;
+    if (local.isNotEmpty) return _recortar(local);
+  }
+
+  return 'Jugador';
+}
+
+String _recortar(String texto) =>
+    texto.length <= maxLargoUsername ? texto : '${texto.substring(0, maxLargoUsername)}…';
+
 /// Tema de texto: Rubik para texto de párrafo/cuerpo, Young Serif para
 /// títulos y encabezados.
 TextTheme _buildTextTheme() {
@@ -555,9 +581,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
     if (!mounted) return;
     setState(() {
       _userId = usuario.id;
-      _username = (usuario.userMetadata?['username'] as String?)?.trim().isNotEmpty == true
-          ? usuario.userMetadata!['username'] as String
-          : (usuario.email ?? 'Jugador');
+      _username = nombreVisible(
+        username: usuario.userMetadata?['username'] as String?,
+        email: usuario.email,
+      );
       _identidadLista = true;
     });
     _conectarSocket();
@@ -683,6 +710,36 @@ class _LobbyScreenState extends State<LobbyScreen> {
     });
   }
 
+  Future<void> _cambiarNombre() async {
+    final nuevoNombre = await showDialog<String>(
+      context: context,
+      builder: (context) => _CambiarNombreDialog(nombreActual: _username),
+    );
+    if (nuevoNombre == null || !mounted) return;
+
+    try {
+      await supabase.auth.updateUser(UserAttributes(data: {'username': nuevoNombre}));
+      if (!mounted) return;
+      setState(() => _username = nombreVisible(username: nuevoNombre));
+      // El backend guarda su propia copia del nombre para mostrarlo en el
+      // lobby, así que hay que avisarle también.
+      await http.post(
+        Uri.parse('$backendBaseUrl/api/perfil'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'userId': _userId, 'username': _username}),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nombre actualizado')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo actualizar el nombre')),
+      );
+    }
+  }
+
   void _cancelarMiSala() {
     if (_miSalaId == null) return;
     _socket.emit('cancelar_sala', {'salaId': _miSalaId, 'userId': _userId});
@@ -759,10 +816,20 @@ class _LobbyScreenState extends State<LobbyScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    'Hola, $_username',
-                    style: GoogleFonts.youngSerif(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold),
+                  // Flexible + ellipsis: aunque el nombre ya viene recortado,
+                  // en pantallas angostas igual podría no entrar.
+                  Flexible(
+                    child: Text(
+                      'Hola, $_username',
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.youngSerif(
+                        fontSize: 20,
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
+                  const SizedBox(width: 8),
                   Row(
                     children: [
                       const Text('Salas disponibles ', style: TextStyle(color: Colors.white60, fontSize: 13)),
@@ -840,6 +907,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
           color: const Color(0xFF14142C),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_cornerRadius)),
           onSelected: (valor) async {
+            if (valor == 'nombre') {
+              await _cambiarNombre();
+              return;
+            }
             if (valor == 'salir') {
               await supabase.auth.signOut();
               if (!mounted) return;
@@ -850,6 +921,16 @@ class _LobbyScreenState extends State<LobbyScreen> {
             }
           },
           itemBuilder: (context) => const [
+            PopupMenuItem(
+              value: 'nombre',
+              child: Row(
+                children: [
+                  Icon(Icons.edit, color: goldAccent, size: 18),
+                  SizedBox(width: 8),
+                  Text('Cambiar nombre', style: TextStyle(color: Colors.white)),
+                ],
+              ),
+            ),
             PopupMenuItem(
               value: 'salir',
               child: Row(
@@ -997,7 +1078,11 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(creadoPor, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    Text(
+                      creadoPor,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
                     Text(
                       sala['nombre'] ?? 'Sala',
                       style: const TextStyle(color: Colors.white38, fontSize: 12),
@@ -1050,6 +1135,85 @@ class _LobbyScreenState extends State<LobbyScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CambiarNombreDialog extends StatefulWidget {
+  final String nombreActual;
+
+  const _CambiarNombreDialog({required this.nombreActual});
+
+  @override
+  State<_CambiarNombreDialog> createState() => _CambiarNombreDialogState();
+}
+
+class _CambiarNombreDialogState extends State<_CambiarNombreDialog> {
+  late final TextEditingController _controller;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.nombreActual);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _guardar() {
+    final nombre = _controller.text.trim();
+    if (nombre.length < 3) {
+      setState(() => _error = 'Mínimo 3 caracteres');
+      return;
+    }
+    if (nombre.contains('@')) {
+      setState(() => _error = 'No uses tu correo: este nombre lo ven los demás');
+      return;
+    }
+    Navigator.of(context).pop(nombre);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Cambiar nombre'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Así te van a ver los demás jugadores en el lobby y en la partida.',
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            maxLength: maxLargoUsername,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              labelText: 'Nombre de usuario',
+              errorText: _error,
+              counterStyle: const TextStyle(color: Colors.white38),
+            ),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            onSubmitted: (_) => _guardar(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(onPressed: _guardar, child: const Text('Guardar')),
+      ],
     );
   }
 }
@@ -1974,7 +2138,11 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(nombre, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            child: Text(
+              nombre,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
           ),
           if (estado != null) ...[
             Text(

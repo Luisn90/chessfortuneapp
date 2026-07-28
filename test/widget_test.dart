@@ -27,4 +27,34 @@ void main() {
 
     expect(find.text('Iniciar sesión'), findsOneWidget);
   });
+
+  group('nombreVisible', () {
+    test('usa el nombre elegido cuando existe', () {
+      expect(
+        nombreVisible(username: 'Gabo', email: 'luisgabrielnavast90@gmail.com'),
+        'Gabo',
+      );
+    });
+
+    test('nunca expone el correo completo: usa lo anterior a la @', () {
+      final nombre = nombreVisible(email: 'luisgabrielnavast90@gmail.com');
+      expect(nombre.contains('@'), isFalse);
+      expect(nombre.contains('gmail'), isFalse);
+    });
+
+    test('recorta los nombres demasiado largos', () {
+      final nombre = nombreVisible(email: 'luisgabrielnavast90@gmail.com');
+      expect(nombre.length, lessThanOrEqualTo(maxLargoUsername + 1)); // +1 por el "…"
+      expect(nombre.endsWith('…'), isTrue);
+    });
+
+    test('un correo corto se usa entero, sin recortar', () {
+      expect(nombreVisible(email: 'gabo@gmail.com'), 'gabo');
+    });
+
+    test('cae en "Jugador" si no hay nombre ni correo', () {
+      expect(nombreVisible(), 'Jugador');
+      expect(nombreVisible(username: '   ', email: ''), 'Jugador');
+    });
+  });
 }
