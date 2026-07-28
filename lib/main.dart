@@ -1163,6 +1163,13 @@ class _GameScreenState extends State<GameScreen> {
   // servidor anuncia el fin de la partida por cualquier motivo.
   bool _partidaTerminada = false;
 
+  // --- Jugada anticipada (premove) ---
+  // Jugada que dejo preparada mientras el rival piensa; se envía sola apenas
+  // llega la jugada de él, si sigue siendo legal en la posición resultante.
+  ChessMove? _premove;
+  int? _premoveSelectedIndex;
+  List<ChessMove> _premoveCandidates = [];
+
   @override
   void initState() {
     super.initState();
@@ -1211,12 +1218,18 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   void _onSquareTap(int index) {
-    // Partida terminada, o no es mi turno: no se permiten jugadas.
+    // Partida terminada: no se permite nada más.
     final currentStatus = _engine.status;
     if (_partidaTerminada ||
         currentStatus == GameStatus.checkmate ||
-        currentStatus == GameStatus.stalemate ||
-        _engine.turn != widget.miColor) {
+        currentStatus == GameStatus.stalemate) {
+      return;
+    }
+
+    // Fuera de turno no se juega, pero sí se puede dejar preparada la
+    // siguiente jugada (premove).
+    if (_engine.turn != widget.miColor) {
+      _onSquareTapPremove(index);
       return;
     }
 
@@ -1275,6 +1288,102 @@ class _GameScreenState extends State<GameScreen> {
     _playMove(movesToTarget.first);
   }
 
+  // === JUGADA ANTICIPADA (PREMOVE) ===
+
+  /// Toques en el tablero mientras es el turno del rival: en vez de jugar,
+  /// se arma la jugada que quedará encolada.
+  void _onSquareTapPremove(int index) {
+    final piezaTocada = _engine.pieceAt(index);
+    final esPiezaPropia = piezaTocada != null && piezaTocada.color == widget.miColor;
+
+    // Con un premove ya encolado, el siguiente toque siempre lo descarta:
+    // o bien para cancelarlo, o para empezar a elegir otro distinto.
+    if (_premove != null) {
+      setState(() => _premove = null);
+      if (!esPiezaPropia) return;
+    }
+
+    if (_premoveSelectedIndex == null) {
+      if (esPiezaPropia) _seleccionarParaPremove(index);
+      return;
+    }
+
+    if (index == _premoveSelectedIndex) {
+      _limpiarSeleccionPremove();
+      return;
+    }
+
+    final candidatos = _premoveCandidates.where((m) => m.to == index).toList();
+    if (candidatos.isEmpty) {
+      if (esPiezaPropia) {
+        _seleccionarParaPremove(index);
+      } else {
+        _limpiarSeleccionPremove();
+      }
+      return;
+    }
+
+    // Si el destino admite promoción, se asume dama (lo estándar): abrir un
+    // diálogo mientras el rival juega interrumpiría más de lo que ayuda.
+    final elegido = candidatos.firstWhere(
+      (m) => m.promotion == null || m.promotion == PieceType.queen,
+      orElse: () => candidatos.first,
+    );
+
+    setState(() {
+      _premove = elegido;
+      _premoveSelectedIndex = null;
+      _premoveCandidates = [];
+    });
+  }
+
+  void _seleccionarParaPremove(int index) {
+    setState(() {
+      _premoveSelectedIndex = index;
+      _premoveCandidates = _engine.premoveCandidatesFrom(index);
+    });
+  }
+
+  void _limpiarSeleccionPremove() {
+    setState(() {
+      _premoveSelectedIndex = null;
+      _premoveCandidates = [];
+    });
+  }
+
+  void _cancelarPremove() {
+    setState(() {
+      _premove = null;
+      _premoveSelectedIndex = null;
+      _premoveCandidates = [];
+    });
+  }
+
+  /// Se llama apenas pasa a ser mi turno. El premove se eligió a ciegas
+  /// (sin saber qué haría el rival), así que hay que revalidarlo contra la
+  /// posición real: si dejó de ser legal, se descarta.
+  void _intentarEjecutarPremove() {
+    final premove = _premove;
+    if (premove == null) return;
+    if (_partidaTerminada || _engine.turn != widget.miColor) return;
+
+    setState(() => _premove = null);
+
+    final legales = _engine.legalMovesFrom(premove.from).where((m) => m.to == premove.to).toList();
+    if (legales.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tu jugada anticipada ya no era posible')),
+      );
+      return;
+    }
+
+    final elegida = legales.firstWhere(
+      (m) => m.promotion == premove.promotion,
+      orElse: () => legales.first,
+    );
+    _playMove(elegida);
+  }
+
   /// Jugada hecha por mí: se la mando al servidor para que la valide.
   /// No se aplica al tablero aquí — se aplica cuando llega confirmada por
   /// "pieza_movida" (ver [_onMovimientoConfirmado]).
@@ -1300,7 +1409,10 @@ class _GameScreenState extends State<GameScreen> {
       _engine.makeMove(move);
       selectedIndex = null;
       _legalMovesFromSelection = [];
+      _premoveSelectedIndex = null;
+      _premoveCandidates = [];
     });
+    _intentarEjecutarPremove();
   }
 
   Future<void> _confirmarRendicion() async {
@@ -1340,7 +1452,12 @@ class _GameScreenState extends State<GameScreen> {
         : Map<String, dynamic>.from(datos['saldos'] as Map);
     final miNuevoSaldo = saldos?[widget.userId] as num?;
 
-    setState(() => _partidaTerminada = true);
+    setState(() {
+      _partidaTerminada = true;
+      _premove = null;
+      _premoveSelectedIndex = null;
+      _premoveCandidates = [];
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showGameOverDialog(
@@ -1472,6 +1589,7 @@ class _GameScreenState extends State<GameScreen> {
   Widget build(BuildContext context) {
     final status = _engine.status;
     final legalTargets = _legalMovesFromSelection.map((m) => m.to).toSet();
+    final premoveTargets = _premoveCandidates.map((m) => m.to).toSet();
     final kingInCheckIndex = (status == GameStatus.check || status == GameStatus.checkmate)
         ? _findKingIndex(_engine.turn)
         : null;
@@ -1533,11 +1651,21 @@ class _GameScreenState extends State<GameScreen> {
                     final isKingInCheck = kingInCheckIndex == boardIndex;
                     final piece = _engine.pieceAt(boardIndex);
 
+                    // Premove: la jugada encolada y la selección en curso se
+                    // pintan de otro color para no confundirlas con una
+                    // jugada real ya hecha.
+                    final esPremove = _premove != null &&
+                        (_premove!.from == boardIndex || _premove!.to == boardIndex);
+                    final esSeleccionPremove = _premoveSelectedIndex == boardIndex;
+                    final esDestinoPremove = premoveTargets.contains(boardIndex);
+
                     Color squareColor = isDarkSquare
                         ? const Color(0xFF16162F)
                         : const Color(0xFF0B0B1F);
                     if (isKingInCheck) {
                       squareColor = Colors.redAccent.withOpacity(0.55);
+                    } else if (esPremove || esSeleccionPremove) {
+                      squareColor = const Color(0xFF5B7FDE).withOpacity(0.55);
                     } else if (isSelected) {
                       squareColor = goldAccent.withOpacity(0.4);
                     }
@@ -1567,6 +1695,23 @@ class _GameScreenState extends State<GameScreen> {
                                       : null,
                                 ),
                               ),
+                            if (esDestinoPremove && !esSeleccionPremove)
+                              Container(
+                                width: piece == null ? 12 : 34,
+                                height: piece == null ? 12 : 34,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: piece == null
+                                      ? const Color(0xFF5B7FDE).withOpacity(0.5)
+                                      : Colors.transparent,
+                                  border: piece != null
+                                      ? Border.all(
+                                          color: const Color(0xFF5B7FDE).withOpacity(0.8),
+                                          width: 3,
+                                        )
+                                      : null,
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -1580,6 +1725,10 @@ class _GameScreenState extends State<GameScreen> {
                 estado: _statusLabel(status),
                 estadoDestacado: esMiTurno || status == GameStatus.check,
               ),
+              if (_premove != null) ...[
+                const SizedBox(height: 8),
+                _buildPremoveBanner(),
+              ],
               const SizedBox(height: 12),
               _buildCapturedRow(
                 'Capturaste',
@@ -1647,6 +1796,39 @@ class _GameScreenState extends State<GameScreen> {
                 fontWeight: estadoDestacado ? FontWeight.bold : FontWeight.normal,
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPremoveBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF5B7FDE).withOpacity(0.18),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF5B7FDE).withOpacity(0.6)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.bolt, color: Color(0xFF9DB4F0), size: 18),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'Jugada anticipada lista',
+              style: TextStyle(color: Color(0xFF9DB4F0), fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: _cancelarPremove,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF9DB4F0),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Cancelar'),
+          ),
         ],
       ),
     );

@@ -129,4 +129,45 @@ void main() {
       });
     });
   });
+
+  group('jugada anticipada (premove)', () {
+    test('ofrece destinos aunque no sea el turno de esa pieza', () {
+      final engine = ChessEngine();
+      // Turno de las blancas: el caballo negro de g8 (índice 6) no tiene
+      // movimientos legales todavía, pero sí candidatos de premove.
+      expect(engine.turn, PieceColor.white);
+      expect(engine.legalMovesFrom(6), isEmpty);
+
+      final candidatos = engine.premoveCandidatesFrom(6).map((m) => m.to).toSet();
+      expect(candidatos, {21, 23}); // f6 y h6
+    });
+
+    test('el peón puede apuntar en diagonal a una casilla vacía', () {
+      final engine = ChessEngine();
+      engine.makeMove(engine.legalMovesFrom(52).firstWhere((m) => m.to == 36)); // e4
+
+      // Turno de las negras. El peón blanco de e4 (36) no tiene capturas
+      // reales disponibles, pero como premove sí puede apuntar a las
+      // diagonales por si las negras mueven algo ahí.
+      expect(engine.turn, PieceColor.black);
+      final destinos = engine.premoveCandidatesFrom(36).map((m) => m.to).toSet();
+      expect(destinos.contains(27), isTrue); // d5, vacía
+      expect(destinos.contains(29), isTrue); // f5, vacía
+      expect(destinos.contains(28), isTrue); // e5, avance normal
+    });
+
+    test('no devuelve nada para una casilla vacía', () {
+      final engine = ChessEngine();
+      expect(engine.premoveCandidatesFrom(35), isEmpty);
+    });
+
+    test('no ofrece casillas ocupadas por piezas propias', () {
+      final engine = ChessEngine();
+      // Torre negra en a8 (0): su avance está tapado por su propio caballo
+      // en b8 (1) y su propio peón en a7 (8).
+      final destinos = engine.premoveCandidatesFrom(0).map((m) => m.to).toSet();
+      expect(destinos.contains(1), isFalse);
+      expect(destinos.contains(8), isFalse);
+    });
+  });
 }

@@ -173,6 +173,55 @@ class ChessEngine {
     return moves;
   }
 
+  /// Destinos candidatos para una jugada anticipada (premove): la que el
+  /// jugador deja preparada mientras el rival todavía está pensando.
+  ///
+  /// A diferencia de [legalMovesFrom], NO exige que sea el turno de la pieza,
+  /// porque justamente se elige fuera de turno. Se calcula sobre la posición
+  /// actual, que es una buena aproximación: mientras el rival piensa, las
+  /// piezas propias no se mueven y solo una pieza rival cambiará de lugar.
+  ///
+  /// La excepción son los peones: solo pueden ir en diagonal si hay una pieza
+  /// rival ahí, y todavía no la hay, así que aquí se ofrecen igual esas
+  /// diagonales anticipando que el rival mueva una pieza a esa casilla.
+  ///
+  /// La legalidad real no se puede conocer hasta que el rival mueva: quien
+  /// use esto DEBE revalidar con [legalMovesFrom] antes de enviar la jugada.
+  List<ChessMove> premoveCandidatesFrom(int index) {
+    final piece = board[index];
+    if (piece == null) return [];
+
+    final candidatos = _pseudoLegalMoves(index).toList();
+    if (piece.type != PieceType.pawn) return candidatos;
+
+    final r = row(index), c = col(index);
+    final dir = piece.color == PieceColor.white ? -1 : 1;
+    final promotionRow = piece.color == PieceColor.white ? 0 : 7;
+
+    for (final dc in [-1, 1]) {
+      final nr = r + dir, nc = c + dc;
+      if (!inBounds(nr, nc)) continue;
+      final destino = indexOf(nr, nc);
+      // Si ya está cubierto (captura real o al paso), no lo duplicamos.
+      if (candidatos.any((m) => m.to == destino)) continue;
+
+      if (nr == promotionRow) {
+        for (final promo in const [
+          PieceType.queen,
+          PieceType.rook,
+          PieceType.bishop,
+          PieceType.knight,
+        ]) {
+          candidatos.add(ChessMove(index, destino, promotion: promo));
+        }
+      } else {
+        candidatos.add(ChessMove(index, destino));
+      }
+    }
+
+    return candidatos;
+  }
+
   /// Aplica un movimiento (debe provenir de [legalMovesFrom]) y cambia el turno.
   /// Devuelve la pieza capturada, si la hubo.
   ChessPiece? makeMove(ChessMove move) {
