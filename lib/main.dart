@@ -615,6 +615,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final miColor = miIndice == 0 ? PieceColor.white : PieceColor.black;
       final oponente = jugadores[miIndice == 0 ? 1 : 0]['username'] as String?;
       final costo = ((data['costo'] as num?) ?? 0).toDouble();
+      final relojInicial = data['reloj'] == null
+          ? null
+          : Map<String, dynamic>.from(data['reloj'] as Map);
 
       setState(() => _miSalaId = null);
       Navigator.push<double>(
@@ -628,6 +631,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
             miNombre: _username,
             costo: costo,
             oponenteNombre: oponente,
+            relojInicial: relojInicial,
           ),
         ),
       ).then((nuevoSaldo) {
@@ -667,6 +671,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
       'username': _username,
       'nombre': resultado['nombre'],
       'costo': resultado['costo'],
+      'minutos': resultado['minutos'],
     });
   }
 
@@ -1011,9 +1016,21 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    Text(
-                      _tiempoRelativo(sala['creadaEn']),
-                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _tiempoRelativo(sala['creadaEn']),
+                          style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                        const SizedBox(width: 10),
+                        const Icon(Icons.hourglass_empty, color: Colors.white54, size: 13),
+                        const SizedBox(width: 3),
+                        Text(
+                          '${(sala['minutos'] as num?)?.toInt() ?? 5}:00',
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 6),
                     Row(
@@ -1049,6 +1066,7 @@ class _CrearSalaDialog extends StatefulWidget {
 class _CrearSalaDialogState extends State<_CrearSalaDialog> {
   late final TextEditingController _controller;
   double _costo = 0;
+  int _minutos = 5;
 
   @override
   void initState() {
@@ -1076,6 +1094,18 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
             decoration: const InputDecoration(labelText: 'Nombre de la sala'),
           ),
           const SizedBox(height: 20),
+          const Text('Tiempo por jugador', style: TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildChip('1 min', seleccionado: _minutos == 1, onTap: () => setState(() => _minutos = 1)),
+              _buildChip('5 min', seleccionado: _minutos == 5, onTap: () => setState(() => _minutos = 5)),
+              _buildChip('10 min', seleccionado: _minutos == 10, onTap: () => setState(() => _minutos = 10)),
+            ],
+          ),
+          const SizedBox(height: 20),
           const Text('Costo', style: TextStyle(color: Colors.white70, fontSize: 13)),
           const SizedBox(height: 8),
           // Wrap en vez de Row: los chips bajan de línea si no caben, en vez
@@ -1085,8 +1115,8 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _buildCostoChip('Gratis', 0),
-              _buildCostoChip('1.0 SEED', 1),
+              _buildChip('Gratis', seleccionado: _costo == 0, onTap: () => setState(() => _costo = 0)),
+              _buildChip('1.0 SEED', seleccionado: _costo == 1, onTap: () => setState(() => _costo = 1)),
             ],
           ),
         ],
@@ -1100,7 +1130,11 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
           onPressed: () {
             final nombre = _controller.text.trim();
             if (nombre.isEmpty) return;
-            Navigator.of(context).pop({'nombre': nombre, 'costo': _costo});
+            Navigator.of(context).pop({
+              'nombre': nombre,
+              'costo': _costo,
+              'minutos': _minutos,
+            });
           },
           child: const Text('Crear'),
         ),
@@ -1108,12 +1142,11 @@ class _CrearSalaDialogState extends State<_CrearSalaDialog> {
     );
   }
 
-  Widget _buildCostoChip(String etiqueta, double valor) {
-    final seleccionado = _costo == valor;
+  Widget _buildChip(String etiqueta, {required bool seleccionado, required VoidCallback onTap}) {
     return ChoiceChip(
       label: Text(etiqueta),
       selected: seleccionado,
-      onSelected: (_) => setState(() => _costo = valor),
+      onSelected: (_) => onTap(),
       showCheckmark: false,
       backgroundColor: Colors.white10,
       selectedColor: goldAccent,
@@ -1137,6 +1170,9 @@ class GameScreen extends StatefulWidget {
   final String miNombre;
   final double costo;
   final String? oponenteNombre;
+  /// Estado inicial del reloj que manda el servidor con "partida_iniciada":
+  /// { blancas: ms, negras: ms, turno: 'white'|'black' }.
+  final Map<String, dynamic>? relojInicial;
 
   const GameScreen({
     super.key,
@@ -1147,6 +1183,7 @@ class GameScreen extends StatefulWidget {
     required this.miNombre,
     this.costo = 0,
     this.oponenteNombre,
+    this.relojInicial,
   });
 
   @override
@@ -1170,6 +1207,16 @@ class _GameScreenState extends State<GameScreen> {
   int? _premoveSelectedIndex;
   List<ChessMove> _premoveCandidates = [];
 
+  // --- Reloj ---
+  // El servidor es la autoridad: manda el estado con cada jugada y es quien
+  // declara el fin por tiempo. Acá solo guardamos la última sincronización e
+  // interpolamos con el reloj local para que la cuenta atrás se vea fluida.
+  int _msBlancas = 0;
+  int _msNegras = 0;
+  PieceColor? _turnoDelReloj;
+  DateTime _ultimaSyncReloj = DateTime.now();
+  Timer? _tickReloj;
+
   @override
   void initState() {
     super.initState();
@@ -1181,15 +1228,53 @@ class _GameScreenState extends State<GameScreen> {
     widget.socket.on('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.on('rival_desconectado', _onRivalDesconectado);
     widget.socket.on('partida_terminada', _onPartidaTerminada);
+
+    _sincronizarReloj(widget.relojInicial);
+    // Solo refresca la pantalla; el tiempo real lo lleva el servidor.
+    _tickReloj = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      if (mounted && !_partidaTerminada) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _tickReloj?.cancel();
     widget.socket.off('pieza_movida', _onMovimientoConfirmado);
     widget.socket.off('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.off('rival_desconectado', _onRivalDesconectado);
     widget.socket.off('partida_terminada', _onPartidaTerminada);
     super.dispose();
+  }
+
+  // === RELOJ ===
+
+  void _sincronizarReloj(Map<String, dynamic>? reloj) {
+    if (reloj == null) return;
+    final turno = reloj['turno'] as String?;
+    setState(() {
+      _msBlancas = ((reloj['blancas'] as num?) ?? 0).toInt();
+      _msNegras = ((reloj['negras'] as num?) ?? 0).toInt();
+      _turnoDelReloj = turno == null
+          ? null
+          : (turno == 'white' ? PieceColor.white : PieceColor.black);
+      _ultimaSyncReloj = DateTime.now();
+    });
+  }
+
+  /// Tiempo a mostrar: el último valor confirmado por el servidor, menos lo
+  /// que lleva corriendo localmente si es el turno de ese color.
+  int _msRestantes(PieceColor color) {
+    final base = color == PieceColor.white ? _msBlancas : _msNegras;
+    if (_partidaTerminada || _turnoDelReloj != color) return base;
+    final transcurrido = DateTime.now().difference(_ultimaSyncReloj).inMilliseconds;
+    return (base - transcurrido).clamp(0, base);
+  }
+
+  String _formatearTiempo(int ms) {
+    final totalSegundos = (ms / 1000).ceil();
+    final minutos = totalSegundos ~/ 60;
+    final segundos = totalSegundos % 60;
+    return '$minutos:${segundos.toString().padLeft(2, '0')}';
   }
 
   void _onMovimientoConfirmado(dynamic data) {
@@ -1201,6 +1286,10 @@ class _GameScreenState extends State<GameScreen> {
     final promotion = promoNombre == null
         ? null
         : PieceType.values.firstWhere((t) => t.name == promoNombre);
+
+    if (datos['reloj'] != null) {
+      _sincronizarReloj(Map<String, dynamic>.from(datos['reloj'] as Map));
+    }
     _aplicarMovimiento(ChessMove(from, to, promotion: promotion));
   }
 
@@ -1523,6 +1612,9 @@ class _GameScreenState extends State<GameScreen> {
       case 'rendicion':
         resultadoTexto = gane ? 'Tu rival se rindió. ¡Ganaste!' : 'Te rendiste.';
         break;
+      case 'tiempo':
+        resultadoTexto = 'Se acabó el tiempo. Tablas: no hubo jaque mate.';
+        break;
       default:
         resultadoTexto = 'Tablas por ahogado.';
     }
@@ -1624,7 +1716,10 @@ class _GameScreenState extends State<GameScreen> {
                     style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
                   ),
                 ),
-              _buildPlayerBar(nombre: widget.oponenteNombre ?? 'Rival'),
+              _buildPlayerBar(
+                nombre: widget.oponenteNombre ?? 'Rival',
+                color: widget.miColor == PieceColor.white ? PieceColor.black : PieceColor.white,
+              ),
               const SizedBox(height: 10),
               AspectRatio(
                 aspectRatio: 1,
@@ -1722,6 +1817,7 @@ class _GameScreenState extends State<GameScreen> {
               const SizedBox(height: 10),
               _buildPlayerBar(
                 nombre: widget.miNombre,
+                color: widget.miColor,
                 estado: _statusLabel(status),
                 estadoDestacado: esMiTurno || status == GameStatus.check,
               ),
@@ -1773,7 +1869,17 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  Widget _buildPlayerBar({required String nombre, String? estado, bool estadoDestacado = false}) {
+  Widget _buildPlayerBar({
+    required String nombre,
+    required PieceColor color,
+    String? estado,
+    bool estadoDestacado = false,
+  }) {
+    final ms = _msRestantes(color);
+    final corriendo = !_partidaTerminada && _turnoDelReloj == color;
+    // Bajo un minuto el reloj se pone rojo para que se note el apuro.
+    final colorReloj = ms <= 60000 ? Colors.redAccent : (corriendo ? goldAccent : Colors.white70);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(color: const Color(0xFF12122A), borderRadius: BorderRadius.circular(14)),
@@ -1788,7 +1894,7 @@ class _GameScreenState extends State<GameScreen> {
           Expanded(
             child: Text(nombre, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
-          if (estado != null)
+          if (estado != null) ...[
             Text(
               estado,
               style: TextStyle(
@@ -1796,6 +1902,20 @@ class _GameScreenState extends State<GameScreen> {
                 fontWeight: estadoDestacado ? FontWeight.bold : FontWeight.normal,
               ),
             ),
+            const SizedBox(width: 12),
+          ],
+          Icon(Icons.hourglass_empty, size: 15, color: colorReloj),
+          const SizedBox(width: 4),
+          Text(
+            _formatearTiempo(ms),
+            style: TextStyle(
+              color: colorReloj,
+              fontWeight: corriendo ? FontWeight.bold : FontWeight.normal,
+              // Dígitos de ancho fijo: si no, el reloj "salta" al cambiar
+              // de número.
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
         ],
       ),
     );

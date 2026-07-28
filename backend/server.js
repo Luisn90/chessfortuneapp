@@ -121,6 +121,80 @@ const salas = new Map();
 // (mismo criterio que usa el cliente al recibir "partida_iniciada").
 const partidas = new Map();
 
+// Controles de tiempo permitidos al crear una sala (minutos por jugador).
+const MINUTOS_PERMITIDOS = [1, 5, 10];
+const MINUTOS_POR_DEFECTO = 5;
+
+// Reloj de cada partida en curso: salaId -> { blancas, negras, ultimoTick, timeout }.
+// El reloj vive en el servidor porque hay dinero de por medio: si lo llevara
+// el cliente, se podría manipular. El cliente solo lo muestra e interpola.
+const relojes = new Map();
+
+function iniciarReloj(sala) {
+    const ms = sala.minutos * 60 * 1000;
+    relojes.set(sala.id, { blancas: ms, negras: ms, ultimoTick: Date.now(), timeout: null });
+    programarTimeout(sala);
+}
+
+/// Descuenta al jugador que acaba de mover el tiempo que estuvo pensando.
+/// Debe llamarse ANTES de aplicar la jugada (mientras partida.turn todavía
+/// es quien movió).
+function descontarTiempo(sala) {
+    const reloj = relojes.get(sala.id);
+    const partida = partidas.get(sala.id);
+    if (!reloj || !partida) return;
+
+    const ahora = Date.now();
+    const transcurrido = ahora - reloj.ultimoTick;
+    if (partida.turn === PieceColor.WHITE) {
+        reloj.blancas = Math.max(0, reloj.blancas - transcurrido);
+    } else {
+        reloj.negras = Math.max(0, reloj.negras - transcurrido);
+    }
+    reloj.ultimoTick = ahora;
+}
+
+/// (Re)programa el disparo automático para cuando se acabe el tiempo del
+/// jugador al que le toca mover.
+function programarTimeout(sala) {
+    const reloj = relojes.get(sala.id);
+    const partida = partidas.get(sala.id);
+    if (!reloj || !partida) return;
+
+    if (reloj.timeout) clearTimeout(reloj.timeout);
+    const restante = partida.turn === PieceColor.WHITE ? reloj.blancas : reloj.negras;
+    reloj.timeout = setTimeout(() => {
+        finalizarPartida(sala, partida, 'tiempo').catch((error) =>
+            console.error('[Reloj] Error al finalizar por tiempo:', error.message)
+        );
+    }, restante);
+}
+
+function limpiarReloj(salaId) {
+    const reloj = relojes.get(salaId);
+    if (reloj && reloj.timeout) clearTimeout(reloj.timeout);
+    relojes.delete(salaId);
+}
+
+/// Estado del reloj para mandarle al cliente: ya descuenta el tiempo que
+/// lleva pensando el jugador de turno, para que la pantalla arranque
+/// sincronizada.
+function estadoReloj(sala) {
+    const reloj = relojes.get(sala.id);
+    const partida = partidas.get(sala.id);
+    if (!reloj) return null;
+
+    const enCurso = Boolean(partida);
+    const transcurrido = enCurso ? Date.now() - reloj.ultimoTick : 0;
+    const turno = enCurso ? partida.turn : null;
+
+    return {
+        blancas: Math.max(0, reloj.blancas - (turno === PieceColor.WHITE ? transcurrido : 0)),
+        negras: Math.max(0, reloj.negras - (turno === PieceColor.BLACK ? transcurrido : 0)),
+        turno,
+    };
+}
+
 function listaSalasPublicas() {
     return Array.from(salas.values())
         .filter((sala) => sala.estado === 'esperando')
@@ -128,6 +202,7 @@ function listaSalasPublicas() {
             id: sala.id,
             nombre: sala.nombre,
             costo: sala.costo,
+            minutos: sala.minutos,
             creadorId: sala.creadorId,
             creadorNombre: sala.jugadores[0]?.username ?? 'Jugador',
             creadaEn: sala.creadaEn,
@@ -145,6 +220,12 @@ function difundirSalas() {
 // ganadorForzadoId se usa para la rendición, donde el ganador no se deduce
 // del tablero sino de quién se rindió.
 async function finalizarPartida(sala, partida, estado, ganadorForzadoId = null) {
+    // Guarda contra doble liquidación: sin esto, un timeout de reloj que
+    // dispare justo cuando llega el jaque mate pagaría el pozo dos veces.
+    if (sala.estado !== 'en_curso') return;
+    sala.estado = 'finalizada';
+    limpiarReloj(sala.id);
+
     const [blancas, negras] = sala.jugadores;
     let ganadorUserId = null;
     let saldos = null;
@@ -176,12 +257,16 @@ async function finalizarPartida(sala, partida, estado, ganadorForzadoId = null) 
         }
     }
 
-    sala.estado = 'finalizada';
     partidas.delete(sala.id);
 
-    const resultado = estado === 'checkmate' ? 'jaque_mate' : estado === 'rendicion' ? 'rendicion' : 'ahogado';
+    const resultados = {
+        checkmate: 'jaque_mate',
+        rendicion: 'rendicion',
+        tiempo: 'tiempo',
+        stalemate: 'ahogado',
+    };
     io.to(sala.id).emit('partida_terminada', {
-        resultado,
+        resultado: resultados[estado] ?? 'ahogado',
         ganadorUserId,
         costo: sala.costo,
         saldos,
@@ -197,16 +282,23 @@ io.on('connection', (socket) => {
     socket.emit('salas_actualizadas', listaSalasPublicas());
 
     socket.on('crear_sala', (datos) => {
-        const { userId, username, nombre, costo } = datos || {};
+        const { userId, username, nombre, costo, minutos } = datos || {};
         if (!userId || !nombre) {
             socket.emit('error_sala', { message: 'Faltan datos para crear la sala' });
             return;
         }
 
+        // Solo aceptamos los controles de tiempo de la lista: el cliente no
+        // decide tiempos arbitrarios.
+        const minutosElegidos = MINUTOS_PERMITIDOS.includes(Number(minutos))
+            ? Number(minutos)
+            : MINUTOS_POR_DEFECTO;
+
         const sala = {
             id: randomUUID(),
             nombre: String(nombre).slice(0, 40),
             costo: Number(costo) || 0,
+            minutos: minutosElegidos,
             creadorId: userId,
             estado: 'esperando',
             creadaEn: Date.now(),
@@ -273,9 +365,12 @@ io.on('connection', (socket) => {
 
             sala.estado = 'en_curso';
             partidas.set(sala.id, new ChessEngine());
+            iniciarReloj(sala);
             io.to(sala.id).emit('partida_iniciada', {
                 salaId: sala.id,
                 costo: sala.costo,
+                minutos: sala.minutos,
+                reloj: estadoReloj(sala),
                 jugadores: sala.jugadores.map((j) => ({ userId: j.userId, username: j.username })),
             });
             console.log(`[Lobby] Sala "${sala.nombre}" completa, partida iniciada`);
@@ -326,8 +421,19 @@ io.on('connection', (socket) => {
             return;
         }
 
+        // El descuento va ANTES de aplicar la jugada, mientras partida.turn
+        // todavía es quien movió; programarTimeout va después, cuando el
+        // turno ya pasó al rival.
+        descontarTiempo(sala);
         partida.makeMove(movimiento);
-        io.to(salaId).emit('pieza_movida', { from, to, promotion: promocionSolicitada });
+        programarTimeout(sala);
+
+        io.to(salaId).emit('pieza_movida', {
+            from,
+            to,
+            promotion: promocionSolicitada,
+            reloj: estadoReloj(sala),
+        });
 
         const estadoPartida = partida.status;
         if (estadoPartida === 'checkmate' || estadoPartida === 'stalemate') {
