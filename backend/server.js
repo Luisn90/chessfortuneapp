@@ -149,6 +149,11 @@ const partidas = new Map();
 const MINUTOS_PERMITIDOS = [1, 5, 10];
 const MINUTOS_POR_DEFECTO = 5;
 
+// Margen para volver a una partida tras perder la conexión (o cerrar la app)
+// antes de darla por abandonada. El reloj NO se detiene mientras tanto: si no
+// se detuviera, desconectarse sería una forma gratis de ganar tiempo.
+const SEGUNDOS_RECONEXION = 30;
+
 // Reloj de cada partida en curso: salaId -> { blancas, negras, ultimoTick, timeout }.
 // El reloj vive en el servidor porque hay dinero de por medio: si lo llevara
 // el cliente, se podría manipular. El cliente solo lo muestra e interpola.
@@ -261,36 +266,62 @@ function difundirSalas() {
     io.emit('salas_actualizadas', listaSalasPublicas());
 }
 
+function cancelarReconexion(jugador) {
+    if (jugador && jugador.timeoutReconexion) {
+        clearTimeout(jugador.timeoutReconexion);
+        jugador.timeoutReconexion = null;
+    }
+}
+
+/// Todo lo que necesita el cliente para rearmar una partida en curso tras
+/// reconectarse. Se manda el historial de jugadas en vez de serializar el
+/// tablero: el cliente lo reproduce con su propio motor y así quedan bien
+/// también el enroque, la captura al paso y las piezas comidas.
+function estadoPartidaPara(sala, userId) {
+    const indice = sala.jugadores.findIndex((j) => j.userId === userId);
+    if (indice === -1) return null;
+
+    return {
+        salaId: sala.id,
+        costo: sala.costo,
+        minutos: sala.minutos,
+        miColor: indice === 0 ? PieceColor.WHITE : PieceColor.BLACK,
+        jugadores: sala.jugadores.map((j) => ({ userId: j.userId, username: j.username })),
+        historial: sala.historial ?? [],
+        reloj: estadoReloj(sala),
+    };
+}
+
 // Liquida una partida terminada: si tenía apuesta, le paga al ganador el
-// pozo menos la comisión de la casa (jaque mate o rendición) o devuelve la
-// apuesta a cada quien sin comisión (ahogado/tablas). Sin apuesta, solo se
+// pozo menos la comisión de la casa, o devuelve la apuesta a cada quien sin
+// comisión cuando no hay ganador (ahogado/tablas). Sin apuesta, solo se
 // avisa el resultado. jugadores[0] siempre es blancas, jugadores[1] negras.
-// ganadorForzadoId se usa para la rendición, donde el ganador no se deduce
-// del tablero sino de quién se rindió.
+// ganadorForzadoId se usa para rendición y abandono, donde el ganador no se
+// deduce del tablero sino de quién se fue.
 async function finalizarPartida(sala, partida, estado, ganadorForzadoId = null) {
     // Guarda contra doble liquidación: sin esto, un timeout de reloj que
     // dispare justo cuando llega el jaque mate pagaría el pozo dos veces.
     if (sala.estado !== 'en_curso') return;
     sala.estado = 'finalizada';
     limpiarReloj(sala.id);
+    sala.jugadores.forEach(cancelarReconexion);
 
     const [blancas, negras] = sala.jugadores;
     let ganadorUserId = null;
     let saldos = null;
 
-    if (estado === 'checkmate') {
-        // partida.turn quedó en el color que no pudo mover: ese perdió.
+    if (estado === 'checkmate' || estado === 'tiempo') {
+        // partida.turn quedó en el color que no pudo mover o que se quedó sin
+        // tiempo: ese perdió.
         const ganador = partida.turn === PieceColor.WHITE ? negras : blancas;
         ganadorUserId = ganador.userId;
-    } else if (estado === 'rendicion') {
+    } else if (estado === 'rendicion' || estado === 'abandono') {
         ganadorUserId = ganadorForzadoId;
     }
 
-    const hayGanadorClaro = estado === 'checkmate' || estado === 'rendicion';
-
     if (sala.costo > 0) {
         try {
-            if (hayGanadorClaro && ganadorUserId) {
+            if (ganadorUserId) {
                 const pozo = sala.costo * 2;
                 const pago = Math.round(pozo * (1 - RAKE_PORCENTAJE) * 100) / 100;
                 const nuevoSaldo = await ajustarSaldo(ganadorUserId, pago);
@@ -310,6 +341,7 @@ async function finalizarPartida(sala, partida, estado, ganadorForzadoId = null) 
     const resultados = {
         checkmate: 'jaque_mate',
         rendicion: 'rendicion',
+        abandono: 'abandono',
         tiempo: 'tiempo',
         stalemate: 'ahogado',
     };
@@ -413,6 +445,7 @@ io.on('connection', (socket) => {
 
             sala.estado = 'en_curso';
             partidas.set(sala.id, new ChessEngine());
+            sala.historial = [];
             iniciarReloj(sala);
             io.to(sala.id).emit('partida_iniciada', {
                 salaId: sala.id,
@@ -475,6 +508,9 @@ io.on('connection', (socket) => {
         descontarTiempo(sala);
         partida.makeMove(movimiento);
         programarTimeout(sala);
+        // Guardamos la jugada para poder rearmarle la partida a quien se
+        // reconecte (ver estadoPartidaPara).
+        sala.historial.push({ from, to, promotion: promocionSolicitada });
 
         io.to(salaId).emit('pieza_movida', {
             from,
@@ -503,24 +539,67 @@ io.on('connection', (socket) => {
         await finalizarPartida(sala, partida, 'rendicion', ganador ? ganador.userId : null);
     });
 
+    // Volver a una partida en curso tras un corte de red o tras cerrar y
+    // reabrir la app. Se identifica por userId (el socket es otro).
+    socket.on('reconectar_partida', (datos) => {
+        const { salaId, userId } = datos || {};
+        const sala = salas.get(salaId);
+        const partida = partidas.get(salaId);
+
+        if (!sala || !partida || sala.estado !== 'en_curso') {
+            socket.emit('reconexion_fallida');
+            return;
+        }
+
+        const jugador = sala.jugadores.find((j) => j.userId === userId);
+        if (!jugador) {
+            socket.emit('reconexion_fallida');
+            return;
+        }
+
+        cancelarReconexion(jugador);
+        jugador.socketId = socket.id;
+        socket.join(sala.id);
+
+        console.log(`[Partida] ${jugador.username} volvió a la sala "${sala.nombre}"`);
+        socket.emit('partida_restaurada', estadoPartidaPara(sala, userId));
+        socket.to(sala.id).emit('rival_reconectado');
+    });
+
     socket.on('disconnect', () => {
         console.log(`Usuario desconectado: ${socket.id}`);
         let huboCambios = false;
+
         for (const [salaId, sala] of salas.entries()) {
+            const jugador = sala.jugadores.find((j) => j.socketId === socket.id);
+            if (!jugador) continue;
+
             if (sala.estado === 'en_curso') {
-                const seguiaAqui = sala.jugadores.some((j) => j.socketId === socket.id);
-                if (seguiaAqui) {
-                    socket.to(salaId).emit('rival_desconectado');
-                }
+                // No se da por perdida enseguida: hay una ventana para volver.
+                // El reloj sigue corriendo mientras tanto, así que igual puede
+                // perder por tiempo antes de que se agote esa ventana.
+                const partida = partidas.get(salaId);
+                socket.to(salaId).emit('rival_desconectado', {
+                    segundos: SEGUNDOS_RECONEXION,
+                });
+
+                cancelarReconexion(jugador);
+                jugador.timeoutReconexion = setTimeout(() => {
+                    const rival = sala.jugadores.find((j) => j.userId !== jugador.userId);
+                    console.log(`[Partida] ${jugador.username} no volvió: abandona la sala "${sala.nombre}"`);
+                    finalizarPartida(sala, partida, 'abandono', rival ? rival.userId : null).catch(
+                        (error) => console.error('[Partida] Error al finalizar por abandono:', error.message)
+                    );
+                }, SEGUNDOS_RECONEXION * 1000);
                 continue;
             }
-            if (sala.estado !== 'esperando') continue;
-            const seguiaAqui = sala.jugadores.some((j) => j.socketId === socket.id);
-            if (seguiaAqui) {
+
+            if (sala.estado === 'esperando') {
                 salas.delete(salaId);
                 huboCambios = true;
             }
         }
+
         if (huboCambios) difundirSalas();
     });
 });

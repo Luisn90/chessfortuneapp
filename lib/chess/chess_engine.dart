@@ -222,6 +222,27 @@ class ChessEngine {
     return candidatos;
   }
 
+  /// Reconstruye la partida reproduciendo una lista de jugadas desde la
+  /// posición inicial. Se usa al reconectarse: el servidor manda el historial
+  /// en vez del tablero serializado, y así quedan bien también los derechos
+  /// de enroque, la captura al paso y las piezas comidas.
+  ///
+  /// Ignora en silencio una jugada que no sea legal en su momento: si el
+  /// historial viniera corrupto, es preferible quedarse con la posición
+  /// reconstruida hasta ahí que reventar en medio de una partida.
+  void replayMoves(List<ChessMove> moves) {
+    reset();
+    for (final move in moves) {
+      final legal = legalMovesFrom(move.from).where((m) => m.to == move.to).toList();
+      if (legal.isEmpty) return;
+      final elegida = legal.firstWhere(
+        (m) => m.promotion == move.promotion,
+        orElse: () => legal.first,
+      );
+      makeMove(elegida);
+    }
+  }
+
   /// Aplica un movimiento (debe provenir de [legalMovesFrom]) y cambia el turno.
   /// Devuelve la pieza capturada, si la hubo.
   ChessPiece? makeMove(ChessMove move) {

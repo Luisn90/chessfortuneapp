@@ -170,4 +170,93 @@ void main() {
       expect(destinos.contains(8), isFalse);
     });
   });
+
+  group('reconexión: reconstruir la partida desde el historial', () {
+    test('deja el tablero igual que jugando las mismas jugadas', () {
+      // Partida de referencia, jugada normalmente, guardando el historial.
+      final referencia = ChessEngine();
+      final jugadas = <ChessMove>[];
+
+      void jugar(int from, int to) {
+        final m = referencia.legalMovesFrom(from).firstWhere((mv) => mv.to == to);
+        jugadas.add(m);
+        referencia.makeMove(m);
+      }
+
+      jugar(52, 36); // e4
+      jugar(12, 28); // e5
+      jugar(61, 34); // Bc4
+      jugar(1, 18); // Nc6
+
+      final restaurada = ChessEngine();
+      restaurada.replayMoves(jugadas);
+
+      for (int i = 0; i < 64; i++) {
+        expect(
+          restaurada.pieceAt(i)?.symbol,
+          referencia.pieceAt(i)?.symbol,
+          reason: 'la casilla $i no coincide',
+        );
+      }
+      expect(restaurada.turn, referencia.turn);
+    });
+
+    test('conserva las piezas capturadas', () {
+      final engine = ChessEngine();
+      final jugadas = <ChessMove>[];
+
+      void jugar(int from, int to) {
+        final m = engine.legalMovesFrom(from).firstWhere((mv) => mv.to == to);
+        jugadas.add(m);
+        engine.makeMove(m);
+      }
+
+      jugar(52, 36); // e4
+      jugar(11, 27); // d5
+      jugar(36, 27); // exd5, captura
+
+      final restaurada = ChessEngine();
+      restaurada.replayMoves(jugadas);
+
+      expect(restaurada.capturedByWhite.length, 1);
+      expect(restaurada.capturedByWhite.first.type, PieceType.pawn);
+    });
+
+    test('conserva el derecho a enrocar cuando el rey no se movió', () {
+      final engine = ChessEngine();
+      final jugadas = <ChessMove>[];
+
+      void jugar(int from, int to) {
+        final m = engine.legalMovesFrom(from).firstWhere((mv) => mv.to == to);
+        jugadas.add(m);
+        engine.makeMove(m);
+      }
+
+      jugar(52, 36); // e4
+      jugar(12, 28); // e5
+      jugar(62, 45); // Nf3
+      jugar(1, 18); // Nc6
+      jugar(61, 34); // Bc4
+      jugar(6, 21); // Nf6
+
+      final restaurada = ChessEngine();
+      restaurada.replayMoves(jugadas);
+
+      // El enroque corto debe seguir disponible tras la reconstrucción.
+      expect(
+        restaurada.legalMovesFrom(60).any((m) => m.to == 62),
+        isTrue,
+      );
+    });
+
+    test('un historial vacío deja la posición inicial', () {
+      final engine = ChessEngine();
+      engine.makeMove(engine.legalMovesFrom(52).firstWhere((m) => m.to == 36));
+
+      engine.replayMoves([]);
+
+      expect(engine.turn, PieceColor.white);
+      expect(engine.allLegalMoves(PieceColor.white).length, 20);
+    });
+  });
 }

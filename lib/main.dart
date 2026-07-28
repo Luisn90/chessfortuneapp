@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -88,6 +89,28 @@ const double _cornerRadius = 12;
 
 /// Largo máximo del nombre visible de un jugador.
 const int maxLargoUsername = 16;
+
+/// Recuerda en qué partida quedó el jugador para poder devolverlo ahí si
+/// cierra la app (o se le corta la red) en medio de una. El servidor da una
+/// ventana corta para volver antes de darla por abandonada.
+class PartidaPendiente {
+  static const _clave = 'partida_en_curso';
+
+  static Future<void> guardar(String salaId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_clave, salaId);
+  }
+
+  static Future<String?> leer() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_clave);
+  }
+
+  static Future<void> limpiar() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_clave);
+  }
+}
 
 /// Nombre a mostrar de un jugador.
 ///
@@ -615,6 +638,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
     _socket.onConnect((_) {
       if (mounted) setState(() => _conectando = false);
+      // Si quedó una partida a medias (se cortó la red, o se cerró la app),
+      // pedimos volver a ella antes de que el servidor la dé por abandonada.
+      _intentarReconectarPartida();
     });
 
     _socket.on('salas_actualizadas', (data) {
@@ -633,41 +659,21 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
     _socket.on('partida_iniciada', (data) {
       if (!mounted) return;
-      final jugadores = List<Map<String, dynamic>>.from(
-        (data['jugadores'] as List).map((j) => Map<String, dynamic>.from(j)),
-      );
-      final miIndice = jugadores.indexWhere((j) => j['userId'] == _userId);
-      if (miIndice == -1) return; // partida de otra sala, no es la mía
-
-      final miColor = miIndice == 0 ? PieceColor.white : PieceColor.black;
-      final oponente = jugadores[miIndice == 0 ? 1 : 0]['username'] as String?;
-      final costo = ((data['costo'] as num?) ?? 0).toDouble();
-      final relojInicial = data['reloj'] == null
-          ? null
-          : Map<String, dynamic>.from(data['reloj'] as Map);
-
       setState(() => _miSalaId = null);
-      Navigator.push<double>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => GameScreen(
-            socket: _socket,
-            salaId: data['salaId'] as String,
-            miColor: miColor,
-            userId: _userId,
-            miNombre: _username,
-            costo: costo,
-            oponenteNombre: oponente,
-            relojInicial: relojInicial,
-          ),
-        ),
-      ).then((nuevoSaldo) {
-        if (nuevoSaldo != null && mounted) {
-          setState(() => saldoSeed = nuevoSaldo);
-        } else {
-          _cargarSaldo(); // por si acaso, sincronizamos con el servidor
-        }
-      });
+      _abrirPartida(Map<String, dynamic>.from(data as Map));
+    });
+
+    // Respuesta a "reconectar_partida": el servidor nos devuelve la partida
+    // tal cual estaba (historial de jugadas + relojes).
+    _socket.on('partida_restaurada', (data) {
+      if (!mounted || data == null) return;
+      _abrirPartida(Map<String, dynamic>.from(data as Map), restaurada: true);
+    });
+
+    _socket.on('reconexion_fallida', (_) {
+      // La partida ya no existe (terminó o se dio por abandonada).
+      PartidaPendiente.limpiar();
+      _cargarSaldo();
     });
 
     _socket.on('error_sala', (data) {
@@ -678,6 +684,60 @@ class _LobbyScreenState extends State<LobbyScreen> {
     });
 
     _socket.connect();
+  }
+
+  Future<void> _intentarReconectarPartida() async {
+    final salaId = await PartidaPendiente.leer();
+    if (salaId == null || !mounted) return;
+    _socket.emit('reconectar_partida', {'salaId': salaId, 'userId': _userId});
+  }
+
+  /// Abre la pantalla de juego, tanto para una partida nueva como para una
+  /// restaurada tras reconectarse (que además trae el historial de jugadas).
+  void _abrirPartida(Map<String, dynamic> data, {bool restaurada = false}) {
+    final jugadores = List<Map<String, dynamic>>.from(
+      (data['jugadores'] as List).map((j) => Map<String, dynamic>.from(j)),
+    );
+    final miIndice = jugadores.indexWhere((j) => j['userId'] == _userId);
+    if (miIndice == -1) return; // partida de otra sala, no es la mía
+
+    final salaId = data['salaId'] as String;
+    final miColor = miIndice == 0 ? PieceColor.white : PieceColor.black;
+    final oponente = jugadores[miIndice == 0 ? 1 : 0]['username'] as String?;
+    final costo = ((data['costo'] as num?) ?? 0).toDouble();
+    final relojInicial =
+        data['reloj'] == null ? null : Map<String, dynamic>.from(data['reloj'] as Map);
+    final historial = data['historial'] == null
+        ? const <Map<String, dynamic>>[]
+        : List<Map<String, dynamic>>.from(
+            (data['historial'] as List).map((m) => Map<String, dynamic>.from(m)),
+          );
+
+    PartidaPendiente.guardar(salaId);
+
+    Navigator.push<double>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GameScreen(
+          socket: _socket,
+          salaId: salaId,
+          miColor: miColor,
+          userId: _userId,
+          miNombre: _username,
+          costo: costo,
+          oponenteNombre: oponente,
+          relojInicial: relojInicial,
+          historial: historial,
+          restaurada: restaurada,
+        ),
+      ),
+    ).then((nuevoSaldo) {
+      if (nuevoSaldo != null && mounted) {
+        setState(() => saldoSeed = nuevoSaldo);
+      } else {
+        _cargarSaldo(); // por si acaso, sincronizamos con el servidor
+      }
+    });
   }
 
   @override
@@ -1337,6 +1397,10 @@ class GameScreen extends StatefulWidget {
   /// Estado inicial del reloj que manda el servidor con "partida_iniciada":
   /// { blancas: ms, negras: ms, turno: 'white'|'black' }.
   final Map<String, dynamic>? relojInicial;
+  /// Jugadas ya hechas, para rearmar el tablero al reconectarse.
+  final List<Map<String, dynamic>> historial;
+  /// True si venimos de una reconexión (para avisarlo en pantalla).
+  final bool restaurada;
 
   const GameScreen({
     super.key,
@@ -1348,6 +1412,8 @@ class GameScreen extends StatefulWidget {
     this.costo = 0,
     this.oponenteNombre,
     this.relojInicial,
+    this.historial = const [],
+    this.restaurada = false,
   });
 
   @override
@@ -1396,12 +1462,30 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     widget.socket.on('pieza_movida', _onMovimientoConfirmado);
     widget.socket.on('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.on('rival_desconectado', _onRivalDesconectado);
+    widget.socket.on('rival_reconectado', _onRivalReconectado);
     widget.socket.on('partida_terminada', _onPartidaTerminada);
 
     _rotacionReloj = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
+
+    // Al reconectarse, el servidor manda las jugadas ya hechas y el motor
+    // local las reproduce para reconstruir la posición exacta.
+    if (widget.historial.isNotEmpty) {
+      _engine.replayMoves(
+        widget.historial.map((m) {
+          final promoNombre = m['promotion'] as String?;
+          return ChessMove(
+            (m['from'] as num).toInt(),
+            (m['to'] as num).toInt(),
+            promotion: promoNombre == null
+                ? null
+                : PieceType.values.firstWhere((t) => t.name == promoNombre),
+          );
+        }).toList(),
+      );
+    }
 
     _sincronizarReloj(widget.relojInicial);
     // Solo refresca la pantalla; el tiempo real lo lleva el servidor.
@@ -1417,6 +1501,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     widget.socket.off('pieza_movida', _onMovimientoConfirmado);
     widget.socket.off('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.off('rival_desconectado', _onRivalDesconectado);
+    widget.socket.off('rival_reconectado', _onRivalReconectado);
     widget.socket.off('partida_terminada', _onPartidaTerminada);
     super.dispose();
   }
@@ -1477,9 +1562,22 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     );
   }
 
-  void _onRivalDesconectado(dynamic _) {
+  void _onRivalDesconectado(dynamic data) {
     if (!mounted) return;
-    setState(() => _avisoRival = 'Tu rival se desconectó de la partida');
+    final segundos = data is Map ? (data['segundos'] as num?)?.toInt() : null;
+    setState(() {
+      _avisoRival = segundos == null
+          ? 'Tu rival se desconectó'
+          : 'Tu rival se desconectó: tiene $segundos s para volver o pierde';
+    });
+  }
+
+  void _onRivalReconectado(dynamic _) {
+    if (!mounted) return;
+    setState(() => _avisoRival = null);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Tu rival volvió a la partida')),
+    );
   }
 
   void _onSquareTap(int index) {
@@ -1722,7 +1820,11 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       _premove = null;
       _premoveSelectedIndex = null;
       _premoveCandidates = [];
+      _avisoRival = null;
     });
+    // Ya no hay a dónde volver: si se cierra la app ahora, no debe intentar
+    // reconectarse a una partida terminada.
+    PartidaPendiente.limpiar();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showGameOverDialog(
@@ -1789,7 +1891,14 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         resultadoTexto = gane ? 'Tu rival se rindió. ¡Ganaste!' : 'Te rendiste.';
         break;
       case 'tiempo':
-        resultadoTexto = 'Se acabó el tiempo. Tablas: no hubo jaque mate.';
+        resultadoTexto = gane
+            ? 'A tu rival se le acabó el tiempo. ¡Ganaste!'
+            : 'Se te acabó el tiempo. Perdiste.';
+        break;
+      case 'abandono':
+        resultadoTexto = gane
+            ? 'Tu rival abandonó la partida. ¡Ganaste!'
+            : 'Abandonaste la partida.';
         break;
       default:
         resultadoTexto = 'Tablas por ahogado.';
@@ -1866,23 +1975,25 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         _partidaTerminada || status == GameStatus.checkmate || status == GameStatus.stalemate;
     final esMiTurno = _engine.turn == widget.miColor;
 
-    return Scaffold(
+    // No se puede abandonar la partida con el gesto/botón "atrás" del
+    // sistema: dejaría al rival esperando y con el reloj corriendo. Para
+    // salir hay que rendirse explícitamente (o terminar la partida).
+    return PopScope(
+      canPop: terminada,
+      onPopInvokedWithResult: (salio, _) {
+        if (salio || terminada) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Para salir de la partida tienes que rendirte')),
+        );
+      },
+      child: Scaffold(
       bottomNavigationBar: _buildBottomNav(),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Column(
             children: [
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white70),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                  Expanded(child: SvgPicture.asset('assets/images/logo.svg', width: 160)),
-                  const SizedBox(width: 48), // balancea el ancho del ícono de volver
-                ],
-              ),
+              Center(child: SvgPicture.asset('assets/images/logo.svg', width: 160)),
               const SizedBox(height: 12),
               if (_avisoRival != null)
                 Padding(
@@ -1975,6 +2086,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             ],
           ),
         ),
+      ),
       ),
     );
   }

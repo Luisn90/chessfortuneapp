@@ -40,6 +40,9 @@ dependencies:
   supabase_flutter: ^2.15.4
   flutter_svg: ^2.1.0
   google_fonts: ^6.3.0
+  # Para recordar en qué partida estaba el jugador y poder devolverlo ahí si
+  # cierra la app en medio de una.
+  shared_preferences: ^2.5.3
 
 # app_links (traído por supabase_flutter, para el enlace de regreso de
 # Google OAuth) falla al compilar Android en este proyecto: su
@@ -67,7 +70,6 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^4.0.0
-  shared_preferences: ^2.5.3
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
