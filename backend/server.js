@@ -132,8 +132,15 @@ const relojes = new Map();
 
 function iniciarReloj(sala) {
     const ms = sala.minutos * 60 * 1000;
-    relojes.set(sala.id, { blancas: ms, negras: ms, ultimoTick: Date.now(), timeout: null });
-    programarTimeout(sala);
+    relojes.set(sala.id, {
+        blancas: ms,
+        negras: ms,
+        ultimoTick: Date.now(),
+        timeout: null,
+        // La partida arranca con la primera jugada de las blancas: hasta
+        // entonces el reloj no corre y nadie puede perder por tiempo.
+        iniciado: false,
+    });
 }
 
 /// Descuenta al jugador que acaba de mover el tiempo que estuvo pensando.
@@ -143,6 +150,14 @@ function descontarTiempo(sala) {
     const reloj = relojes.get(sala.id);
     const partida = partidas.get(sala.id);
     if (!reloj || !partida) return;
+
+    // Primera jugada de las blancas: acá recién arranca el reloj, así que no
+    // hay nada que descontar todavía.
+    if (!reloj.iniciado) {
+        reloj.iniciado = true;
+        reloj.ultimoTick = Date.now();
+        return;
+    }
 
     const ahora = Date.now();
     const transcurrido = ahora - reloj.ultimoTick;
@@ -159,7 +174,7 @@ function descontarTiempo(sala) {
 function programarTimeout(sala) {
     const reloj = relojes.get(sala.id);
     const partida = partidas.get(sala.id);
-    if (!reloj || !partida) return;
+    if (!reloj || !partida || !reloj.iniciado) return;
 
     if (reloj.timeout) clearTimeout(reloj.timeout);
     const restante = partida.turn === PieceColor.WHITE ? reloj.blancas : reloj.negras;
@@ -184,14 +199,23 @@ function estadoReloj(sala) {
     const partida = partidas.get(sala.id);
     if (!reloj) return null;
 
-    const enCurso = Boolean(partida);
-    const transcurrido = enCurso ? Date.now() - reloj.ultimoTick : 0;
-    const turno = enCurso ? partida.turn : null;
+    // Antes de la primera jugada de las blancas el reloj está detenido: se
+    // manda el tiempo completo y el cliente no interpola.
+    const corriendo = Boolean(partida) && reloj.iniciado;
+    const transcurrido = corriendo ? Date.now() - reloj.ultimoTick : 0;
+    const turno = partida ? partida.turn : null;
 
     return {
-        blancas: Math.max(0, reloj.blancas - (turno === PieceColor.WHITE ? transcurrido : 0)),
-        negras: Math.max(0, reloj.negras - (turno === PieceColor.BLACK ? transcurrido : 0)),
+        blancas: Math.max(
+            0,
+            reloj.blancas - (corriendo && turno === PieceColor.WHITE ? transcurrido : 0)
+        ),
+        negras: Math.max(
+            0,
+            reloj.negras - (corriendo && turno === PieceColor.BLACK ? transcurrido : 0)
+        ),
         turno,
+        iniciado: reloj.iniciado,
     };
 }
 

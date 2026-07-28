@@ -1190,7 +1190,7 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateMixin {
   final ChessEngine _engine = ChessEngine();
   int? selectedIndex;
   List<ChessMove> _legalMovesFromSelection = [];
@@ -1216,6 +1216,11 @@ class _GameScreenState extends State<GameScreen> {
   PieceColor? _turnoDelReloj;
   DateTime _ultimaSyncReloj = DateTime.now();
   Timer? _tickReloj;
+  /// El reloj recién arranca con la primera jugada de las blancas; hasta
+  /// entonces no se descuenta tiempo ni se interpola en pantalla.
+  bool _relojIniciado = false;
+  /// Gira el ícono del reloj del jugador al que le toca mover.
+  late final AnimationController _rotacionReloj;
 
   @override
   void initState() {
@@ -1229,6 +1234,11 @@ class _GameScreenState extends State<GameScreen> {
     widget.socket.on('rival_desconectado', _onRivalDesconectado);
     widget.socket.on('partida_terminada', _onPartidaTerminada);
 
+    _rotacionReloj = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
+    )..repeat();
+
     _sincronizarReloj(widget.relojInicial);
     // Solo refresca la pantalla; el tiempo real lo lleva el servidor.
     _tickReloj = Timer.periodic(const Duration(milliseconds: 250), (_) {
@@ -1239,6 +1249,7 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void dispose() {
     _tickReloj?.cancel();
+    _rotacionReloj.dispose();
     widget.socket.off('pieza_movida', _onMovimientoConfirmado);
     widget.socket.off('movimiento_rechazado', _onMovimientoRechazado);
     widget.socket.off('rival_desconectado', _onRivalDesconectado);
@@ -1257,6 +1268,7 @@ class _GameScreenState extends State<GameScreen> {
       _turnoDelReloj = turno == null
           ? null
           : (turno == 'white' ? PieceColor.white : PieceColor.black);
+      _relojIniciado = (reloj['iniciado'] as bool?) ?? true;
       _ultimaSyncReloj = DateTime.now();
     });
   }
@@ -1265,7 +1277,7 @@ class _GameScreenState extends State<GameScreen> {
   /// que lleva corriendo localmente si es el turno de ese color.
   int _msRestantes(PieceColor color) {
     final base = color == PieceColor.white ? _msBlancas : _msNegras;
-    if (_partidaTerminada || _turnoDelReloj != color) return base;
+    if (_partidaTerminada || !_relojIniciado || _turnoDelReloj != color) return base;
     final transcurrido = DateTime.now().difference(_ultimaSyncReloj).inMilliseconds;
     return (base - transcurrido).clamp(0, base);
   }
@@ -1723,95 +1735,29 @@ class _GameScreenState extends State<GameScreen> {
               const SizedBox(height: 10),
               AspectRatio(
                 aspectRatio: 1,
-                child: GridView.builder(
-                  itemCount: 64,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 8,
-                  ),
-                  itemBuilder: (context, displayIndex) {
-                    // Para las negras volteamos el tablero 180° (su propia
-                    // fila queda abajo), rotando índice de casilla visual a
-                    // índice real del tablero: la lógica del juego siempre
-                    // trabaja con el índice real (boardIndex).
-                    final boardIndex = widget.miColor == PieceColor.black
-                        ? 63 - displayIndex
-                        : displayIndex;
-
-                    final row = ChessEngine.row(boardIndex);
-                    final col = ChessEngine.col(boardIndex);
-                    final isDarkSquare = (row + col) % 2 == 1;
-                    final isSelected = selectedIndex == boardIndex;
-                    final isLegalTarget = legalTargets.contains(boardIndex);
-                    final isKingInCheck = kingInCheckIndex == boardIndex;
-                    final piece = _engine.pieceAt(boardIndex);
-
-                    // Premove: la jugada encolada y la selección en curso se
-                    // pintan de otro color para no confundirlas con una
-                    // jugada real ya hecha.
-                    final esPremove = _premove != null &&
-                        (_premove!.from == boardIndex || _premove!.to == boardIndex);
-                    final esSeleccionPremove = _premoveSelectedIndex == boardIndex;
-                    final esDestinoPremove = premoveTargets.contains(boardIndex);
-
-                    Color squareColor = isDarkSquare
-                        ? const Color(0xFF16162F)
-                        : const Color(0xFF0B0B1F);
-                    if (isKingInCheck) {
-                      squareColor = Colors.redAccent.withOpacity(0.55);
-                    } else if (esPremove || esSeleccionPremove) {
-                      squareColor = const Color(0xFF5B7FDE).withOpacity(0.55);
-                    } else if (isSelected) {
-                      squareColor = goldAccent.withOpacity(0.4);
-                    }
-
-                    return GestureDetector(
-                      onTap: () => _onSquareTap(boardIndex),
-                      child: Container(
-                        color: squareColor,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            if (piece != null)
-                              ChessPieceGlyph(
-                                simbolo: piece.unicodeSymbol,
-                                esBlanca: piece.color == PieceColor.white,
-                                fontSize: 36,
-                              ),
-                            if (isLegalTarget)
-                              Container(
-                                width: piece == null ? 14 : 36,
-                                height: piece == null ? 14 : 36,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: piece == null ? Colors.white24 : Colors.transparent,
-                                  border: piece != null
-                                      ? Border.all(color: Colors.white54, width: 3)
-                                      : null,
-                                ),
-                              ),
-                            if (esDestinoPremove && !esSeleccionPremove)
-                              Container(
-                                width: piece == null ? 12 : 34,
-                                height: piece == null ? 12 : 34,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: piece == null
-                                      ? const Color(0xFF5B7FDE).withOpacity(0.5)
-                                      : Colors.transparent,
-                                  border: piece != null
-                                      ? Border.all(
-                                          color: const Color(0xFF5B7FDE).withOpacity(0.8),
-                                          width: 3,
-                                        )
-                                      : null,
-                                ),
-                              ),
-                          ],
+                child: Stack(
+                  children: [
+                    _buildTablero(
+                      legalTargets: legalTargets,
+                      premoveTargets: premoveTargets,
+                      kingInCheckIndex: kingInCheckIndex,
+                    ),
+                    // Aviso de arranque, superpuesto para no robarle alto al
+                    // tablero. IgnorePointer para que los toques lleguen a
+                    // las casillas de abajo y se pueda mover con él visible.
+                    Positioned(
+                      top: 10,
+                      left: 10,
+                      right: 10,
+                      child: IgnorePointer(
+                        child: AnimatedOpacity(
+                          opacity: (!_relojIniciado && !terminada) ? 1 : 0,
+                          duration: const Duration(milliseconds: 400),
+                          child: Center(child: _buildAvisoInicio()),
                         ),
                       ),
-                    );
-                  },
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 10),
@@ -1869,6 +1815,130 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
+  Widget _buildTablero({
+    required Set<int> legalTargets,
+    required Set<int> premoveTargets,
+    required int? kingInCheckIndex,
+  }) {
+    return GridView.builder(
+      itemCount: 64,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8),
+      itemBuilder: (context, displayIndex) {
+        // Para las negras volteamos el tablero 180° (su propia fila queda
+        // abajo), rotando índice de casilla visual a índice real del
+        // tablero: la lógica del juego siempre trabaja con el índice real.
+        final boardIndex =
+            widget.miColor == PieceColor.black ? 63 - displayIndex : displayIndex;
+
+        final row = ChessEngine.row(boardIndex);
+        final col = ChessEngine.col(boardIndex);
+        final isDarkSquare = (row + col) % 2 == 1;
+        final isSelected = selectedIndex == boardIndex;
+        final isLegalTarget = legalTargets.contains(boardIndex);
+        final isKingInCheck = kingInCheckIndex == boardIndex;
+        final piece = _engine.pieceAt(boardIndex);
+
+        // Premove: la jugada encolada y la selección en curso se pintan de
+        // otro color para no confundirlas con una jugada real ya hecha.
+        final esPremove = _premove != null &&
+            (_premove!.from == boardIndex || _premove!.to == boardIndex);
+        final esSeleccionPremove = _premoveSelectedIndex == boardIndex;
+        final esDestinoPremove = premoveTargets.contains(boardIndex);
+
+        Color squareColor =
+            isDarkSquare ? const Color(0xFF16162F) : const Color(0xFF0B0B1F);
+        if (isKingInCheck) {
+          squareColor = Colors.redAccent.withOpacity(0.55);
+        } else if (esPremove || esSeleccionPremove) {
+          squareColor = const Color(0xFF5B7FDE).withOpacity(0.55);
+        } else if (isSelected) {
+          squareColor = goldAccent.withOpacity(0.4);
+        }
+
+        return GestureDetector(
+          onTap: () => _onSquareTap(boardIndex),
+          child: Container(
+            color: squareColor,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (piece != null)
+                  ChessPieceGlyph(
+                    simbolo: piece.unicodeSymbol,
+                    esBlanca: piece.color == PieceColor.white,
+                    fontSize: 36,
+                  ),
+                if (isLegalTarget)
+                  Container(
+                    width: piece == null ? 14 : 36,
+                    height: piece == null ? 14 : 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: piece == null ? Colors.white24 : Colors.transparent,
+                      border: piece != null
+                          ? Border.all(color: Colors.white54, width: 3)
+                          : null,
+                    ),
+                  ),
+                if (esDestinoPremove && !esSeleccionPremove)
+                  Container(
+                    width: piece == null ? 12 : 34,
+                    height: piece == null ? 12 : 34,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: piece == null
+                          ? const Color(0xFF5B7FDE).withOpacity(0.5)
+                          : Colors.transparent,
+                      border: piece != null
+                          ? Border.all(
+                              color: const Color(0xFF5B7FDE).withOpacity(0.8),
+                              width: 3,
+                            )
+                          : null,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAvisoInicio() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0B0B1F).withOpacity(0.93),
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: goldAccent.withOpacity(0.75), width: 1.5),
+        boxShadow: const [
+          BoxShadow(color: Colors.black87, blurRadius: 16, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.flag_rounded, color: goldAccent, size: 18),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              'La partida comienza con el primer movimiento de las blancas',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.rubik(
+                color: Colors.white,
+                fontSize: 12.5,
+                height: 1.25,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPlayerBar({
     required String nombre,
     required PieceColor color,
@@ -1876,9 +1946,21 @@ class _GameScreenState extends State<GameScreen> {
     bool estadoDestacado = false,
   }) {
     final ms = _msRestantes(color);
-    final corriendo = !_partidaTerminada && _turnoDelReloj == color;
-    // Bajo un minuto el reloj se pone rojo para que se note el apuro.
-    final colorReloj = ms <= 60000 ? Colors.redAccent : (corriendo ? goldAccent : Colors.white70);
+    final esSuTurno = !_partidaTerminada && _engine.turn == color;
+    // El reloj solo gira cuando de verdad está corriendo (no antes de la
+    // primera jugada de las blancas).
+    final corriendo = esSuTurno && _relojIniciado;
+
+    // Blanco en reposo, dorado para quien tiene el turno, y rojo bajo los
+    // últimos 10 segundos (el apuro manda sobre el resto).
+    final Color colorReloj;
+    if (ms <= 10000) {
+      colorReloj = Colors.redAccent;
+    } else if (esSuTurno) {
+      colorReloj = goldAccent;
+    } else {
+      colorReloj = Colors.white;
+    }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1904,13 +1986,19 @@ class _GameScreenState extends State<GameScreen> {
             ),
             const SizedBox(width: 12),
           ],
-          Icon(Icons.hourglass_empty, size: 15, color: colorReloj),
+          if (corriendo)
+            RotationTransition(
+              turns: _rotacionReloj,
+              child: Icon(Icons.hourglass_bottom, size: 15, color: colorReloj),
+            )
+          else
+            Icon(Icons.hourglass_empty, size: 15, color: colorReloj),
           const SizedBox(width: 4),
           Text(
             _formatearTiempo(ms),
             style: TextStyle(
               color: colorReloj,
-              fontWeight: corriendo ? FontWeight.bold : FontWeight.normal,
+              fontWeight: esSuTurno ? FontWeight.bold : FontWeight.normal,
               // Dígitos de ancho fijo: si no, el reloj "salta" al cambiar
               // de número.
               fontFeatures: const [FontFeature.tabularFigures()],
